@@ -15,6 +15,7 @@ import {
   connectSupabase,
   runMigrations,
   completeSetup,
+  checkEmailConfirmDisabled,
 } from '@/lib/api/setup';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
@@ -75,7 +76,7 @@ function LogoBottomRight() {
 
 export default function WelcomePage() {
   const router = useRouter();
-  const { currentStep, setStep, setSupabaseConfig, markComplete } = useSetupStore();
+  const { currentStep, setStep, setSupabaseConfig, supabaseConfig, markComplete } = useSetupStore();
   const { session, isLoading: isAuthLoading } = useAuthSession();
 
   const [loading, setLoading] = useState(false);
@@ -88,6 +89,16 @@ export default function WelcomePage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+
+  // Supabase connection fields (pre-populated from store if available)
+  const [anonKey, setAnonKey] = useState(supabaseConfig?.anonKey || '');
+  const [serviceRoleKey, setServiceRoleKey] = useState(supabaseConfig?.serviceRoleKey || '');
+  const [connectionUrl, setConnectionUrl] = useState(supabaseConfig?.connectionUrl || '');
+  const [dbPassword, setDbPassword] = useState(supabaseConfig?.dbPassword || '');
+
+  // Email confirmation setting check
+  const [emailConfirmDisabled, setEmailConfirmDisabled] = useState(false);
+  const [checkingEmailConfirm, setCheckingEmailConfirm] = useState(false);
 
   // Ensure dark mode is applied on client-side navigation
   useEffect(() => {
@@ -439,12 +450,11 @@ export default function WelcomePage() {
         setLoading(true);
         setError(null);
 
-        const formData = new FormData(e.currentTarget);
         const config: SupabaseConfig = {
-          anonKey: formData.get('anon_key') as string,
-          serviceRoleKey: formData.get('service_role_key') as string,
-          connectionUrl: formData.get('connection_url') as string,
-          dbPassword: formData.get('db_password') as string,
+          anonKey,
+          serviceRoleKey,
+          connectionUrl,
+          dbPassword,
         };
 
         try {
@@ -511,6 +521,8 @@ export default function WelcomePage() {
                         <Input
                           id="anon_key"
                           name="anon_key"
+                          value={anonKey}
+                          onChange={(e) => setAnonKey(e.target.value)}
                           required
                           size="sm"
                         />
@@ -524,6 +536,8 @@ export default function WelcomePage() {
                         <Input
                           id="service_role_key"
                           name="service_role_key"
+                          value={serviceRoleKey}
+                          onChange={(e) => setServiceRoleKey(e.target.value)}
                           required
                           size="sm"
                         />
@@ -538,6 +552,8 @@ export default function WelcomePage() {
                           type="text"
                           id="connection_url"
                           name="connection_url"
+                          value={connectionUrl}
+                          onChange={(e) => setConnectionUrl(e.target.value)}
                           required
                           size="sm"
                         />
@@ -552,6 +568,8 @@ export default function WelcomePage() {
                           type="password"
                           id="db_password"
                           name="db_password"
+                          value={dbPassword}
+                          onChange={(e) => setDbPassword(e.target.value)}
                           required
                           size="sm"
                         />
@@ -689,6 +707,31 @@ export default function WelcomePage() {
 
   // Step 4: Create Admin Account
   if (currentStep === 'admin') {
+    const handleCheckEmailConfirm = async () => {
+      setCheckingEmailConfirm(true);
+      setError(null);
+
+      try {
+        const result = await checkEmailConfirmDisabled();
+
+        if (result.error) {
+          setError(result.error);
+          return;
+        }
+
+        if (!result.autoconfirm) {
+          setError('Confirm email setting in Supabase is not disabled.');
+          return;
+        }
+
+        setEmailConfirmDisabled(true);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to check setting');
+      } finally {
+        setCheckingEmailConfirm(false);
+      }
+    };
+
     const handleComplete = async () => {
       setLoading(true);
       setError(null);
@@ -769,71 +812,119 @@ export default function WelcomePage() {
 
         </div>
 
-        <div className="w-full max-w-xl py-10 flex flex-col gap-6 animate-in fade-in slide-in-from-bottom-1 duration-700" style={{ animationFillMode: 'both' }}>
+        {!emailConfirmDisabled ? (
+          <div className="w-full max-w-xl py-10 flex flex-col gap-6 animate-in fade-in slide-in-from-bottom-1 duration-700" style={{ animationFillMode: 'both' }}>
 
-          <FieldGroup>
-            <FieldSet>
-              <FieldGroup className="gap-8">
+            <div className="flex-1 flex items-center text-center flex-col gap-4 bg-white/5 py-10 px-6 rounded-2xl">
+              <div className="flex flex-col items-center gap-1">
+                <Label size="sm">Adjust Supabase authentication settings</Label>
+                <p className="text-sm text-muted-foreground leading-relaxed">
+                  In your Supabase project, find and disable the setting below.
+                </p>
+              </div>
+              <div className="flex items-center gap-2 bg-white/5 rounded-lg px-4 py-2.5 text-sm text-white/90">
+                <span>Authentication</span>
+                <span className="text-muted-foreground">→</span>
+                <span>Sign In / Providers</span>
+                <span className="text-muted-foreground">→</span>
+                <span className="font-medium">Confirm email</span>
+              </div>
+              <p className="text-xs text-muted-foreground max-w-sm">
+                The confirmation email is not needed.
+              </p>
+            </div>
 
-                {error && (
-                  <Alert variant="destructive">
-                    <AlertTitle>{error}</AlertTitle>
-                  </Alert>
-                )}
+            {error && (
+              <Alert variant="destructive">
+                <AlertTitle>{error}</AlertTitle>
+              </Alert>
+            )}
 
-                <Field>
-                  <FieldLabel htmlFor="email" size="sm">Email</FieldLabel>
-                  <Input
-                    type="email"
-                    id="email"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    disabled={loading}
-                    size="sm"
-                  />
-                </Field>
+            <div className="flex flex-col gap-2">
+              <Button
+                onClick={handleCheckEmailConfirm}
+                disabled={checkingEmailConfirm}
+              >
+                {checkingEmailConfirm ? <Spinner /> : 'Confirm email disabled'}
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => setStep('migrate')}
+                disabled={checkingEmailConfirm}
+              >
+                Go back
+              </Button>
+            </div>
 
-                <Field>
-                  <FieldLabel htmlFor="password" size="sm">Password</FieldLabel>
-                  <Input
-                    type="password"
-                    id="password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    disabled={loading}
-                    size="sm"
-                  />
-                  <FieldDescription>At least 6 characters</FieldDescription>
-                </Field>
+          </div>
+        ) : (
+          <div className="w-full max-w-xl py-10 flex flex-col gap-6 animate-in fade-in slide-in-from-bottom-1 duration-700" style={{ animationFillMode: 'both' }}>
 
-                <Field>
-                  <FieldLabel htmlFor="confirmPassword" size="sm">Confirm password</FieldLabel>
-                  <Input
-                    type="password"
-                    id="confirmPassword"
-                    value={confirmPassword}
-                    onChange={(e) => setConfirmPassword(e.target.value)}
-                    disabled={loading}
-                    size="sm"
-                  />
-                </Field>
+            <FieldGroup>
+              <FieldSet>
+                <FieldGroup className="gap-8">
 
-                <div className="flex flex-col gap-4 mt-2">
-                  <Button
-                    type="submit"
-                    onClick={handleComplete}
-                    disabled={loading}
-                  >
-                    {loading ? <Spinner /> : 'Create account'}
-                  </Button>
-                  <FieldDescription className="text-center text-[10px] opacity-60">Your user will be stored securely in Supabase Auth.</FieldDescription>
-                </div>
+                  {error && (
+                    <Alert variant="destructive">
+                      <AlertTitle>{error}</AlertTitle>
+                    </Alert>
+                  )}
 
-              </FieldGroup>
-            </FieldSet>
-          </FieldGroup>
+                  <Field>
+                    <FieldLabel htmlFor="email" size="sm">Email</FieldLabel>
+                    <Input
+                      type="email"
+                      id="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      disabled={loading}
+                      size="sm"
+                    />
+                  </Field>
 
-        </div>
+                  <Field>
+                    <FieldLabel htmlFor="password" size="sm">Password</FieldLabel>
+                    <Input
+                      type="password"
+                      id="password"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      disabled={loading}
+                      size="sm"
+                    />
+                    <FieldDescription>At least 6 characters</FieldDescription>
+                  </Field>
+
+                  <Field>
+                    <FieldLabel htmlFor="confirmPassword" size="sm">Confirm password</FieldLabel>
+                    <Input
+                      type="password"
+                      id="confirmPassword"
+                      value={confirmPassword}
+                      onChange={(e) => setConfirmPassword(e.target.value)}
+                      disabled={loading}
+                      size="sm"
+                    />
+                  </Field>
+
+                  <div className="flex flex-col gap-4 mt-2">
+                    <Button
+                      type="submit"
+                      onClick={handleComplete}
+                      disabled={loading}
+                    >
+                      {loading ? <Spinner /> : 'Create account'}
+                    </Button>
+                    <FieldDescription className="text-center text-[10px] opacity-60">Your user will be stored securely in Supabase Auth.</FieldDescription>
+                  </div>
+
+                </FieldGroup>
+              </FieldSet>
+            </FieldGroup>
+
+          </div>
+        )}
 
       </div>
 

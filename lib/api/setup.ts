@@ -54,6 +54,23 @@ export async function runMigrations(): Promise<ApiResponse<void>> {
 }
 
 /**
+ * Check if Supabase "Confirm email" setting is disabled (autoconfirm enabled)
+ */
+export async function checkEmailConfirmDisabled(): Promise<{
+  autoconfirm: boolean;
+  error?: string;
+}> {
+  const response = await fetch('/ycode/api/setup/check-email-confirm');
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(data?.error || `HTTP ${response.status}: ${response.statusText}`);
+  }
+
+  return data;
+}
+
+/**
  * Complete setup (no-op now, kept for compatibility)
  */
 export async function completeSetup(): Promise<ApiResponse<{ redirect_url: string }>> {
