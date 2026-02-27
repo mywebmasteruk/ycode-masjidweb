@@ -66,3 +66,6 @@ next-env.d.ts
 
 # turbo
 .turbo
+
+# scripts
+release.sh
