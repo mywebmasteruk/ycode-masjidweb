@@ -114,16 +114,39 @@ async function autoInitialize(
   });
 }
 
+/**
+ * Ensure the Accept header includes both required MIME types.
+ * Some MCP clients (e.g., Claude Code) don't send text/event-stream,
+ * but the SDK enforces it even when enableJsonResponse is true.
+ */
+function ensureAcceptHeader(request: Request): Request {
+  const accept = request.headers.get('accept') || '';
+  if (accept.includes('application/json') && accept.includes('text/event-stream')) {
+    return request;
+  }
+
+  const headers = new Headers(request.headers);
+  headers.set('Accept', 'application/json, text/event-stream');
+  return new Request(request.url, {
+    method: request.method,
+    headers,
+    body: request.body,
+    // @ts-expect-error duplex is needed for streaming body but not in all TS defs
+    duplex: 'half',
+  });
+}
+
 async function handleMcpRequest(request: Request): Promise<Response> {
-  const sessionId = request.headers.get('mcp-session-id');
+  const normalized = ensureAcceptHeader(request);
+  const sessionId = normalized.headers.get('mcp-session-id');
 
   if (sessionId && sessions.has(sessionId)) {
     const session = sessions.get(sessionId)!;
     session.lastActivity = Date.now();
-    return session.transport.handleRequest(request);
+    return session.transport.handleRequest(normalized);
   }
 
-  if (request.method !== 'POST') {
+  if (normalized.method !== 'POST') {
     return new Response(JSON.stringify({
       jsonrpc: '2.0',
       error: { code: -32000, message: 'Session expired. Send a new initialize request.' },
@@ -134,24 +157,24 @@ async function handleMcpRequest(request: Request): Promise<Response> {
     });
   }
 
-  const body = await request.json();
+  const body = await normalized.json();
   const isInit = !Array.isArray(body) && body.method === 'initialize';
 
   const { server, transport } = createSessionTransport();
   await server.connect(transport);
 
   if (isInit) {
-    const req = new Request(request.url, {
+    const req = new Request(normalized.url, {
       method: 'POST',
-      headers: request.headers,
+      headers: normalized.headers,
     });
     return transport.handleRequest(req, { parsedBody: body });
   }
 
   // Session was lost (serverless instance recycled) — auto-initialize
-  await autoInitialize(transport, request.url);
+  await autoInitialize(transport, normalized.url);
 
-  const actualReq = new Request(request.url, {
+  const actualReq = new Request(normalized.url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
