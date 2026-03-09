@@ -121,22 +121,22 @@ export default function BorderControls({ layer, onLayerUpdate, activeTextStyleKe
     category: 'borders',
     unifiedProperty: 'borderRadius',
     individualProperties: ['borderTopLeftRadius', 'borderTopRightRadius', 'borderBottomRightRadius', 'borderBottomLeftRadius'],
-    modeProperty: 'borderRadiusMode', // Store the mode preference in layer JSON
+    modeProperty: 'borderRadiusMode',
     updateDesignProperty,
     updateDesignProperties,
-    // Don't wrap in useCallback - let it recreate on every render to avoid stale closures
     getCurrentValue: (prop: string) => getDesignProperty('borders', prop) || '',
+    getStoredMode: () => (layer?.design?.borders as Record<string, unknown>)?.borderRadiusMode as 'all' | 'individual' | null,
   });
 
   const widthModeToggle = useModeToggle({
     category: 'borders',
     unifiedProperty: 'borderWidth',
     individualProperties: ['borderTopWidth', 'borderRightWidth', 'borderBottomWidth', 'borderLeftWidth'],
-    modeProperty: 'borderWidthMode', // Store the mode preference in layer JSON
+    modeProperty: 'borderWidthMode',
     updateDesignProperty,
     updateDesignProperties,
-    // Don't wrap in useCallback - let it recreate on every render to avoid stale closures
     getCurrentValue: (prop: string) => getDesignProperty('borders', prop) || '',
+    getStoredMode: () => (layer?.design?.borders as Record<string, unknown>)?.borderWidthMode as 'all' | 'individual' | null,
   });
 
   // Handle radius changes (debounced for text input)
