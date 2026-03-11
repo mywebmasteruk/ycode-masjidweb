@@ -1019,7 +1019,7 @@ export default function ColorPicker({
   const setPreviewOverride = useColorVariablesStore((s) => s.setPreviewOverride);
   const [varEditState, setVarEditState] = useState<VarEditState | null>(null);
 
-  // Detect if the current value is a color variable reference
+  // Detect if the current value (or selected gradient stop) is a color variable reference
   const activeVariableId = useMemo(() => {
     if (!value) return null;
     return extractColorVariableId(value);
@@ -1098,11 +1098,18 @@ export default function ColorPicker({
     isHexInputUpdating.current = false;
   }, [rgbaColor, isGradient, activeTab]);
 
+  // Track tab before entering variable edit mode so we can restore it
+  const tabBeforeVarEdit = useRef<'solid' | 'linear' | 'radial' | 'image' | null>(null);
+  const stopBeforeVarEdit = useRef<string | null>(null);
+
   // Sync picker to variable color when entering edit mode, clear preview on exit
   const prevVarEditId = useRef<string | null>(null);
   useEffect(() => {
     const editKey = varEditState ? (varEditState.id ?? '_create') : null;
     if (editKey && editKey !== prevVarEditId.current && varEditState) {
+      tabBeforeVarEdit.current = activeTab;
+      stopBeforeVarEdit.current = selectedStopId;
+      setActiveTab('solid');
       const parsed = parseColor(varEditState.color);
       setRgbaColor(parsed);
       const hsv = rgbToHsv(parsed.r, parsed.g, parsed.b);
@@ -1111,7 +1118,11 @@ export default function ColorPicker({
       setHsvValue(hsv.v);
       isInternalUpdate.current = true;
     }
-    if (!varEditState) {
+    if (!varEditState && tabBeforeVarEdit.current) {
+      setActiveTab(tabBeforeVarEdit.current);
+      tabBeforeVarEdit.current = null;
+      setPreviewOverride(null);
+    } else if (!varEditState) {
       setPreviewOverride(null);
     }
     prevVarEditId.current = editKey;
@@ -1136,6 +1147,19 @@ export default function ColorPicker({
 
   // Track dragging state for gradient bar handles
   const [draggingStopId, setDraggingStopId] = useState<string | null>(null);
+
+  // Resolve active variable from gradient stop when on a gradient tab
+  const effectiveVariableId = useMemo(() => {
+    if ((activeTab === 'linear' || activeTab === 'radial') && selectedStopId) {
+      const stops = activeTab === 'linear' ? linearStops : radialStops;
+      const stop = stops.find(s => s.id === selectedStopId);
+      if (stop?.color.startsWith('var(--')) {
+        return stop.color.match(/^var\(--([^)]+)\)$/)?.[1] || null;
+      }
+      return null;
+    }
+    return activeVariableId;
+  }, [activeTab, selectedStopId, linearStops, radialStops, activeVariableId]);
 
   // Keep a stable ref to binding so the parse useEffect can sync without re-triggering
   const bindingRef = useRef(binding);
@@ -1438,6 +1462,14 @@ export default function ColorPicker({
     return color;
   }, [colorVariables]);
 
+  const resolvedDisplayValue = useMemo(() => {
+    if (!isGradient || !displayValue) return displayValue;
+    return displayValue.replace(/var\(--([^)]+)\)(\d)/g, (_match, id, digit) => {
+      const cv = colorVariables.find((v) => v.id === id);
+      return `${cv ? cv.value : '#888888'} ${digit}`;
+    });
+  }, [displayValue, isGradient, colorVariables]);
+
   const handleLinearGradientChange = (angle: number, stops: ColorStop[]) => {
     isInternalGradientChange.current = true;
     binding?.onGradientSync?.('linear', stops.map(s => ({ id: s.id, position: s.position, color: s.color })), angle);
@@ -1667,9 +1699,8 @@ export default function ColorPicker({
         setActiveTab('linear');
         const angle = parseInt(match[1]);
         const stopsStr = match[2];
-        // Parse stops: rgba(...)position% or #hexposition% or namedposition%
-        // Match color followed immediately by number%
-        const stopPattern = /(rgba?\([^)]+\)|#[0-9a-fA-F]+|\w+)([\d.]+)%/g;
+        // Parse stops: rgba(...)position% or var(--...)position% or #hexposition% or namedposition%
+        const stopPattern = /(var\(--[^)]+\)|rgba?\([^)]+\)|#[0-9a-fA-F]+|\w+)([\d.]+)%/g;
         const stops: ColorStop[] = [];
         let matchResult;
         let idx = 0;
@@ -1684,19 +1715,16 @@ export default function ColorPicker({
         if (stops.length > 0) {
           setLinearAngle(angle);
           setLinearStops(stops);
-          // Sync parsed stops with binding layer so stop IDs stay consistent
           bindingRef.current?.onGradientSync?.('linear', stops.map(s => ({ id: s.id, position: s.position, color: s.color })), angle);
-          // Select the first stop if none is selected
           setSelectedStopId(prev => (prev && stops.some(s => s.id === prev)) ? prev : stops[0].id);
         }
       }
     } else if (displayValue.startsWith('radial-gradient')) {
-      // Match: radial-gradient(circle,color1position1%,color2position2%,...)
       const match = displayValue.match(/radial-gradient\(circle\s*,\s*(.+)\)/);
       if (match) {
         setActiveTab('radial');
         const stopsStr = match[1];
-        const stopPattern = /(rgba?\([^)]+\)|#[0-9a-fA-F]+|\w+)([\d.]+)%/g;
+        const stopPattern = /(var\(--[^)]+\)|rgba?\([^)]+\)|#[0-9a-fA-F]+|\w+)([\d.]+)%/g;
         const stops: ColorStop[] = [];
         let matchResult;
         let idx = 0;
@@ -1785,7 +1813,7 @@ export default function ColorPicker({
                 alt=""
               />
             ) : (
-              <div className="absolute inset-0 z-20" style={isTransparent ? undefined : { background: isColorVariable && activeVariable ? activeVariable.value : isGradient ? displayValue : `rgba(${Math.round(rgbaColor.r)},${Math.round(rgbaColor.g)},${Math.round(rgbaColor.b)},${rgbaColor.a})` }} />
+              <div className="absolute inset-0 z-20" style={isTransparent ? undefined : { background: isColorVariable && activeVariable ? activeVariable.value : isGradient ? resolvedDisplayValue : `rgba(${Math.round(rgbaColor.r)},${Math.round(rgbaColor.g)},${Math.round(rgbaColor.b)},${rgbaColor.a})` }} />
             )}
             <div className="absolute inset-0 opacity-15 bg-checkerboard bg-background z-10" />
           </div>
@@ -2274,16 +2302,28 @@ export default function ColorPicker({
 
         <ColorVariablesSection
           colorVariables={colorVariables}
-          activeVariableId={activeVariableId}
-          currentColor={rgbaToHex(rgbaColor)}
+          activeVariableId={effectiveVariableId}
+          currentColor={(() => {
+            if ((activeTab === 'linear' || activeTab === 'radial') && selectedStopId) {
+              const stops = activeTab === 'linear' ? linearStops : radialStops;
+              const stop = stops.find(s => s.id === selectedStopId);
+              if (stop) {
+                const resolved = stop.color.startsWith('var(--') ? resolveStopColor(stop.color) : stop.color;
+                return resolved;
+              }
+            }
+            return rgbaToHex(rgbaColor);
+          })()}
           editState={varEditState}
           onEditStateChange={setVarEditState}
           onCreate={cvCreate}
           onUpdate={cvUpdate}
           onDelete={cvDelete}
           onSelect={(varId) => {
-            if ((activeTab === 'linear' || activeTab === 'radial') && selectedStopId) {
-              updateColorStop(activeTab, selectedStopId, { color: `var(--${varId})` });
+            const tab = tabBeforeVarEdit.current || activeTab;
+            const stop = stopBeforeVarEdit.current || selectedStopId;
+            if ((tab === 'linear' || tab === 'radial') && stop) {
+              updateColorStop(tab, stop, { color: `var(--${varId})` });
             } else {
               immediateOnChange(`color:var(--${varId})`);
             }
