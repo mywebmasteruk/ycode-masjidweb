@@ -34,7 +34,7 @@ import { useAuthStore } from '@/stores/useAuthStore';
 // 6. Utils/lib
 import { cn } from '@/lib/utils';
 import { flattenTree, type FlattenedItem } from '@/lib/tree-utilities';
-import { canHaveChildren, getLayerIcon, getLayerName, getCollectionVariable, isTextContentLayer, isRichTextLayer, canMoveLayer, updateLayerProps, filterDisabledSliderLayers } from '@/lib/layer-utils';
+import { canHaveChildren, getLayerIcon, getLayerName, getCollectionVariable, isTextContentLayer, isRichTextLayer, getRichTextSublayers, canMoveLayer, updateLayerProps, filterDisabledSliderLayers } from '@/lib/layer-utils';
 import { MULTI_ASSET_COLLECTION_ID } from '@/lib/collection-field-utils';
 import { hasStyleOverrides } from '@/lib/layer-style-utils';
 import { getUserInitials, getDisplayName } from '@/lib/collaboration-utils';
@@ -203,6 +203,7 @@ const LayerRow = React.memo(function LayerRow({
   const fieldsByCollectionId = useCollectionsStore((state) => state.fields);
 
   // Use selective subscriptions to avoid re-renders when unrelated state changes
+  const setActiveSublayerIndex = useEditorStore((state) => state.setActiveSublayerIndex);
   const editingComponentId = useEditorStore((state) => state.editingComponentId);
   const interactionTriggerLayerIds = useEditorStore((state) => state.interactionTriggerLayerIds);
   const interactionTargetLayerIds = useEditorStore((state) => state.interactionTargetLayerIds);
@@ -283,7 +284,8 @@ const LayerRow = React.memo(function LayerRow({
   // Component instances should not show children in the tree (unless editing master)
   // Children can only be edited via "Edit master component"
   const shouldHideChildren = isComponentInstance && !editingComponentId;
-  const effectiveHasChildren = hasChildren && !shouldHideChildren;
+  const hasSublayers = isRichTextLayer(node.layer) && getRichTextSublayers(node.layer).length > 0;
+  const effectiveHasChildren = (hasChildren && !shouldHideChildren) || hasSublayers;
 
   // Use purple ONLY for component instances (not for all layers when editing a component)
   const usePurpleStyle = isComponentInstance;
@@ -304,6 +306,52 @@ const LayerRow = React.memo(function LayerRow({
 
   // Check if this is the Body layer (locked)
   const isLocked = node.layer.id === 'body';
+
+  // Sublayer rows (TipTap content blocks inside richText elements)
+  if (node.sublayer) {
+    return (
+      <div className="relative">
+        {node.depth > 0 && (
+          <>
+            {Array.from({ length: node.depth }).map((_, i) => (
+              <div
+                key={i}
+                className={cn(
+                  'absolute z-10 top-0 bottom-0 w-px',
+                  (isChildOfSelected || isSelected) ? 'dark:bg-white/10 bg-neutral-900/10' : 'dark:bg-secondary bg-neutral-900/10',
+                )}
+                style={{ left: `${i * 14 + 16}px` }}
+              />
+            ))}
+          </>
+        )}
+        <div
+          className={cn(
+            'group relative flex items-center h-7 cursor-pointer',
+            isSelected && 'bg-primary text-primary-foreground rounded-lg',
+            !isSelected && isChildOfSelected && 'dark:bg-primary/15 bg-primary/10 text-current/70',
+            !isSelected && isChildOfSelected && isLastVisibleDescendant && 'rounded-b-lg',
+            !isSelected && isChildOfSelected && !isLastVisibleDescendant && 'rounded-none',
+            !isSelected && !isChildOfSelected && 'rounded-lg text-secondary-foreground/80 dark:text-muted-foreground',
+          )}
+          style={{ paddingLeft: `${node.depth * 14 + 8}px` }}
+          onClick={() => {
+            onSelect(node.parentId!);
+            setActiveSublayerIndex(node.index);
+          }}
+        >
+          <div className="w-4 h-4 shrink-0" />
+          <Icon
+            name={node.sublayer.icon as any}
+            className={cn('size-3 mx-1.5 shrink-0', isSelected ? 'opacity-70' : 'opacity-40')}
+          />
+          <span className={cn('text-2xs truncate select-none', isSelected ? 'opacity-90' : 'opacity-60')}>
+            {node.sublayer.label}
+          </span>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <LayerContextMenu
@@ -404,8 +452,8 @@ const LayerRow = React.memo(function LayerRow({
             onSelect(node.id);
           }}
         >
-          {/* Expand/Collapse Button - only show for elements that can have children */}
-          {node.canHaveChildren ? (
+          {/* Expand/Collapse Button - show for elements that can have children or richText sublayers */}
+          {(node.canHaveChildren || hasSublayers) ? (
             effectiveHasChildren ? (
               <button
                 onClick={(e) => {
@@ -715,7 +763,7 @@ export default function LayersTree({
   const [shouldScrollToSelected, setShouldScrollToSelected] = useState(false);
 
   // Pull multi-select state and breakpoint from editor store
-  const { selectedLayerIds: storeSelectedLayerIds, lastSelectedLayerId, toggleSelection, selectRange, editingComponentId, activeBreakpoint } = useEditorStore();
+  const { selectedLayerIds: storeSelectedLayerIds, lastSelectedLayerId, toggleSelection, selectRange, editingComponentId, activeBreakpoint, activeSublayerIndex: storeActiveSublayerIndex } = useEditorStore();
 
   // Get component by ID function for drag overlay
   const { getComponentById } = useComponentsStore();
@@ -779,7 +827,27 @@ export default function LayersTree({
         }
       }
 
-      return flattened;
+      // Inject sublayer nodes for expanded richText elements
+      const withSublayers: FlattenedItem[] = [];
+      for (const node of flattened) {
+        withSublayers.push(node);
+        if (isRichTextLayer(node.layer) && !collapsedIds.has(node.id)) {
+          const sublayers = getRichTextSublayers(node.layer);
+          sublayers.forEach((sub, idx) => {
+            withSublayers.push({
+              id: `${node.id}__sub_${idx}`,
+              layer: node.layer,
+              depth: node.depth + 1,
+              parentId: node.id,
+              index: idx,
+              canHaveChildren: false,
+              sublayer: sub,
+            });
+          });
+        }
+      }
+
+      return withSublayers;
     },
     [layers, collapsedIds, activeBreakpoint]
   );
@@ -1047,6 +1115,8 @@ export default function LayersTree({
 
     const draggedId = event.active.id as string;
     const draggedNode = flattenedNodes.find(n => n.id === draggedId);
+
+    if (draggedNode?.sublayer) return;
 
     // Clear hover state when dragging starts
     setHoveredLayerIdFromStore(null);
@@ -1563,15 +1633,33 @@ export default function LayersTree({
     const selectedIdsSet = new Set(selectedLayerIds);
     if (selectedLayerId) selectedIdsSet.add(selectedLayerId);
 
+    // When a sublayer is active, treat it as the selected item
+    // and demote the parent richText layer to "has selected child"
+    const hasSublayerActive = storeActiveSublayerIndex !== null && selectedLayerId !== null;
+    let activeSublayerNodeId: string | null = null;
+
+    if (hasSublayerActive) {
+      activeSublayerNodeId = flattenedNodes.find(
+        n => n.sublayer && n.parentId === selectedLayerId && n.index === storeActiveSublayerIndex
+      )?.id ?? null;
+    }
+
     // Build a parent lookup map for O(1) access
     const nodeById = new Map<string, FlattenedItem>();
     flattenedNodes.forEach(node => nodeById.set(node.id, node));
+
+    // Effective selected set: exclude the parent richText layer when a sublayer is active
+    const effectiveSelectedSet = new Set(selectedIdsSet);
+    if (hasSublayerActive && activeSublayerNodeId) {
+      effectiveSelectedSet.delete(selectedLayerId!);
+      effectiveSelectedSet.add(activeSublayerNodeId);
+    }
 
     // For each node, compute: isChildOfSelected, parentSelectedId
     const childOfSelectedMap = new Map<string, string | null>(); // nodeId -> parentSelectedId
 
     flattenedNodes.forEach(node => {
-      if (selectedIdsSet.has(node.id)) {
+      if (effectiveSelectedSet.has(node.id)) {
         childOfSelectedMap.set(node.id, null); // Selected nodes are not "child of selected"
         return;
       }
@@ -1579,7 +1667,7 @@ export default function LayersTree({
       // Walk up parent chain to see if any ancestor is selected
       let current: FlattenedItem | undefined = node;
       while (current && current.parentId) {
-        if (selectedIdsSet.has(current.parentId)) {
+        if (effectiveSelectedSet.has(current.parentId)) {
           childOfSelectedMap.set(node.id, current.parentId);
           return;
         }
@@ -1591,7 +1679,7 @@ export default function LayersTree({
     // Find last visible descendants for each selected parent
     const lastDescendantMap = new Map<string, string>(); // parentSelectedId -> lastDescendantId
 
-    selectedIdsSet.forEach(selectedId => {
+    effectiveSelectedSet.forEach(selectedId => {
       // Find all descendants of this selected node
       const descendants: string[] = [];
       flattenedNodes.forEach(node => {
@@ -1617,12 +1705,13 @@ export default function LayersTree({
       const isChildOfSelected = parentSelectedId !== null;
       const isLastVisibleDescendant = parentSelectedId !== null &&
         lastDescendantMap.get(parentSelectedId!) === node.id;
-      const hasVisibleChildren = !!(node.layer.children &&
-        node.layer.children.length > 0 &&
-        !collapsedIds.has(node.id));
+      const hasRichTextSublayers = isRichTextLayer(node.layer) && getRichTextSublayers(node.layer).length > 0;
+      const hasVisibleChildren = (!collapsedIds.has(node.id)) && (
+        !!(node.layer.children && node.layer.children.length > 0) || hasRichTextSublayers
+      );
 
       result.set(node.id, {
-        isSelected: selectedIdsSet.has(node.id),
+        isSelected: effectiveSelectedSet.has(node.id),
         isChildOfSelected,
         isLastVisibleDescendant,
         hasVisibleChildren,
@@ -1630,7 +1719,7 @@ export default function LayersTree({
     });
 
     return result;
-  }, [flattenedNodes, selectedLayerIds, selectedLayerId, collapsedIds]);
+  }, [flattenedNodes, selectedLayerIds, selectedLayerId, collapsedIds, storeActiveSublayerIndex]);
 
   return (
     <DndContext

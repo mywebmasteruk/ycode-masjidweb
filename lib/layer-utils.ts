@@ -458,6 +458,73 @@ export function isRichTextLayer(layer: Layer | null | undefined): boolean {
   return layer.name === 'richText';
 }
 
+export interface RichTextSublayer {
+  type: string;
+  label: string;
+  icon: string;
+}
+
+const SUBLAYER_ICON_MAP: Record<string, string> = {
+  paragraph: 'text',
+  heading: 'heading',
+  bulletList: 'listUnordered',
+  orderedList: 'listOrdered',
+  blockquote: 'quote',
+  richTextComponent: 'component',
+};
+
+function extractBlockText(block: any): string {
+  if (!block?.content) return '';
+  return block.content
+    .map((n: any) => {
+      if (n.type === 'text') return n.text || '';
+      if (n.type === 'dynamicVariable') return `[${n.attrs?.label || 'var'}]`;
+      if (n.content) return extractBlockText(n);
+      return '';
+    })
+    .join('');
+}
+
+/**
+ * Extract sublayer metadata from a richText layer's TipTap content.
+ * Returns one entry per top-level block (paragraph, heading, list, etc.).
+ */
+export function getRichTextSublayers(layer: Layer): RichTextSublayer[] {
+  const textVar = layer.variables?.text;
+  if (textVar?.type !== 'dynamic_rich_text') return [];
+  const doc = (textVar.data as any)?.content;
+  if (!doc?.content || !Array.isArray(doc.content)) return [];
+
+  return doc.content
+    .filter((block: any) => block.type !== 'paragraph' || block.content?.length)
+    .map((block: any) => {
+      const type = block.type;
+      const icon = SUBLAYER_ICON_MAP[type] || 'box';
+
+      let label: string;
+      if (type === 'heading') {
+        const level = block.attrs?.level || 1;
+        const text = extractBlockText(block);
+        label = text ? `H${level} · ${text}` : `Heading ${level}`;
+      } else if (type === 'bulletList' || type === 'orderedList') {
+        const itemCount = block.content?.length || 0;
+        label = `${type === 'bulletList' ? 'Bullet' : 'Ordered'} list · ${itemCount} item${itemCount !== 1 ? 's' : ''}`;
+      } else if (type === 'blockquote') {
+        const text = extractBlockText(block);
+        label = text ? `Quote · ${text}` : 'Blockquote';
+      } else if (type === 'richTextComponent') {
+        label = 'Component';
+      } else {
+        const text = extractBlockText(block);
+        label = text || 'Empty paragraph';
+      }
+
+      if (label.length > 35) label = label.slice(0, 35) + '...';
+
+      return { type, label, icon };
+    });
+}
+
 /**
  * Check if a layer is a heading element.
  * Includes backward compat: text layers with h1-h6 tag are treated as headings.

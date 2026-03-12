@@ -97,6 +97,7 @@ interface EditorActions {
   /** Open a RichTextEditorSheet for the given layer (triggered from iframe on double-click) */
   openRichTextSheet: (layerId: string) => void;
   closeRichTextSheet: () => void;
+  setActiveSublayerIndex: (index: number | null) => void;
   // Element picker actions
   startElementPicker: (onSelect: (layerId: string) => void, validate?: (layerId: string) => boolean, originPosition?: { x: number; y: number }) => void;
   stopElementPicker: () => void;
@@ -163,6 +164,8 @@ interface EditorStoreWithHistory extends EditorState {
   layerDragStartPosition: { x: number; y: number } | null;
   /** Layer ID whose content should be opened in a RichTextEditorSheet (set from iframe on double-click) */
   richTextSheetLayerId: string | null;
+  /** Index of the selected sublayer within a richText element (null = no sublayer selected) */
+  activeSublayerIndex: number | null;
   // Element picker state (for linking filter inputs to collection conditions)
   elementPicker: {
     active: boolean;
@@ -241,6 +244,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   canvasSiblingDropTarget: null,
   layerDragStartPosition: null,
   richTextSheetLayerId: null,
+  activeSublayerIndex: null,
   // Element picker initial state
   elementPicker: null,
 
@@ -256,12 +260,13 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
   setSelectedLayerId: (id) => {
     // Legacy support - also update selectedLayerIds
-    // Clear active text style when changing layers
+    // Clear active text style and sublayer when changing layers
     set({
       selectedLayerId: id,
       selectedLayerIds: id ? [id] : [],
       lastSelectedLayerId: id,
       activeTextStyleKey: null,
+      activeSublayerIndex: null,
     });
 
     // Update URL query param if we're in a route that supports layer selection
@@ -596,6 +601,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
   openRichTextSheet: (layerId) => set({ richTextSheetLayerId: layerId }),
   closeRichTextSheet: () => set({ richTextSheetLayerId: null }),
+  setActiveSublayerIndex: (index) => set({ activeSublayerIndex: index }),
 
   // Element picker actions
   startElementPicker: (onSelect, validate, originPosition) => set({

@@ -10,6 +10,12 @@ export interface FlattenedItem {
   index: number;
   collapsed?: boolean;
   canHaveChildren: boolean;
+  /** TipTap sublayer metadata (for richText content blocks) */
+  sublayer?: {
+    type: string;
+    label: string;
+    icon: string;
+  };
 }
 
 /**
