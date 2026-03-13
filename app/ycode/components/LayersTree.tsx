@@ -336,7 +336,7 @@ const LayerRow = React.memo(function LayerRow({
         )}
         <div
           className={cn(
-            'group relative flex items-center h-7 cursor-pointer',
+            'group relative flex items-center h-8 cursor-pointer',
             isSelected && 'bg-primary text-primary-foreground rounded-lg',
             !isSelected && isChildOfSelected && 'dark:bg-primary/15 bg-primary/10 text-current/70',
             !isSelected && isChildOfSelected && isLastVisibleDescendant && 'rounded-b-lg',
