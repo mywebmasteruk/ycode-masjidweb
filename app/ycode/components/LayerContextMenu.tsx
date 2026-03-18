@@ -19,9 +19,10 @@ import { useEditorStore } from '@/stores/useEditorStore';
 import { usePagesStore } from '@/stores/usePagesStore';
 import { useClipboardStore } from '@/stores/useClipboardStore';
 import { useComponentsStore } from '@/stores/useComponentsStore';
-import { canHaveChildren, findLayerById, getClassesString, regenerateInteractionIds, canCopyLayer, canDeleteLayer, regenerateIdsWithInteractionRemapping, removeLayerById, findParentAndIndex, insertLayerAfter, updateLayerProps } from '@/lib/layer-utils';
+import { canHaveChildren, findLayerById, getClassesString, regenerateInteractionIds, canCopyLayer, canDeleteLayer, regenerateIdsWithInteractionRemapping, removeLayerById, findParentAndIndex, insertLayerAfter, updateLayerProps, canConvertToCollection, isExcludedFromCollection, getCollectionVariable, resetBindingsOnCollectionSourceChange } from '@/lib/layer-utils';
 import { cloneDeep } from 'lodash';
 import { toast } from 'sonner';
+import { Icon } from '@/components/ui/icon';
 import { detachSpecificLayerFromComponent, checkCircularReference } from '@/lib/component-utils';
 import type { UseLiveLayerUpdatesReturn } from '@/hooks/use-live-layer-updates';
 import type { UseLiveComponentUpdatesReturn } from '@/hooks/use-live-component-updates';
@@ -407,10 +408,14 @@ export default function LayerContextMenu({
     // Load component into draft (async to ensure proper cache sync)
     await loadComponentDraft(layer.componentId);
 
-    // Select the first (top-level) layer of the component (now on component channel)
+    // Select root layer only if user hasn't already selected a valid component layer during the await
     const component = getComponentById(layer.componentId);
     if (component && component.layers && component.layers.length > 0) {
-      setSelectedLayerId(component.layers[0].id);
+      const currentSelection = useEditorStore.getState().selectedLayerId;
+      const hasValidSelection = currentSelection && findLayerById(component.layers, currentSelection);
+      if (!hasValidSelection) {
+        setSelectedLayerId(component.layers[0].id);
+      }
     }
   };
 
@@ -534,6 +539,61 @@ export default function LayerContextMenu({
     }
   };
 
+  const handleConvertToCollection = () => {
+    if (!layer || !canConvertToCollection(layer)) return;
+
+    const updatedVariables = {
+      ...layer.variables,
+      collection: { id: '' },
+    };
+
+    if (isComponentContext && editingComponentId) {
+      updateComponentAndBroadcast(
+        updateLayerProps(getComponentLayers(), layerId, { variables: updatedVariables })
+      );
+    } else {
+      updateLayer(pageId, layerId, { variables: updatedVariables });
+      if (liveLayerUpdates) {
+        liveLayerUpdates.broadcastLayerUpdate(layerId, { variables: updatedVariables });
+      }
+    }
+  };
+
+  const handleDetachCollection = () => {
+    if (!layer || !getCollectionVariable(layer)) return;
+
+    const { collection, ...restVariables } = layer.variables || {};
+    const updatedVariables = { ...restVariables, collection: undefined };
+
+    if (isComponentContext && editingComponentId) {
+      const componentLayers = getComponentLayers();
+      let newLayers = updateLayerProps(componentLayers, layerId, { variables: updatedVariables });
+      newLayers = resetBindingsOnCollectionSourceChange(newLayers, layerId);
+      updateComponentAndBroadcast(newLayers);
+    } else {
+      updateLayer(pageId, layerId, { variables: updatedVariables });
+
+      setTimeout(() => {
+        const currentLayers = usePagesStore.getState().draftsByPageId[pageId]?.layers;
+        if (!currentLayers) return;
+
+        const cleanedLayers = resetBindingsOnCollectionSourceChange(currentLayers, layerId);
+        if (cleanedLayers !== currentLayers) {
+          setDraftLayers(pageId, cleanedLayers);
+        }
+      }, 0);
+
+      if (liveLayerUpdates) {
+        liveLayerUpdates.broadcastLayerUpdate(layerId, { variables: updatedVariables });
+      }
+    }
+  };
+
+  const isCollection = !!(layer && getCollectionVariable(layer));
+  const canConvert = !!(layer && canConvertToCollection(layer));
+  const showConvertOption = !!(layer && !isCollection && canHaveChildren(layer) && !layer.componentId);
+  const isConvertDisabled = isLocked || isComponentInstance || !!(layer && isExcludedFromCollection(layer));
+
   const handleOpenChange = (open: boolean) => {
     // When context menu opens, select this layer for visual feedback
     // Only select if the layer exists and is not already selected (prevent unnecessary re-renders)
@@ -550,7 +610,7 @@ export default function LayerContextMenu({
       <ContextMenuTrigger asChild>
         {children}
       </ContextMenuTrigger>
-      <ContextMenuContent className="w-44">
+      <ContextMenuContent className="w-46">
         <ContextMenuItem onClick={handleCut} disabled={isLocked || !canCopy || !canDelete}>
           Cut
           <ContextMenuShortcut>⌘X</ContextMenuShortcut>
@@ -596,10 +656,10 @@ export default function LayerContextMenu({
           <ContextMenuShortcut>F2</ContextMenuShortcut>
         </ContextMenuItem>
 
-        <ContextMenuSeparator />
-
         {!isComponentInstance && (
           <>
+            <ContextMenuSeparator />
+
             <ContextMenuItem onClick={handleCopyStyle}>
               Copy style
               <ContextMenuShortcut>⌥⌘C</ContextMenuShortcut>
@@ -614,31 +674,54 @@ export default function LayerContextMenu({
 
             <ContextMenuItem onClick={handleCopyInteractions} disabled={!layer?.interactions || layer.interactions.length === 0}>
               Copy interactions
+              <ContextMenuShortcut><Icon name="zap" className="size-3" /></ContextMenuShortcut>
             </ContextMenuItem>
 
             <ContextMenuItem onClick={handlePasteInteractions} disabled={!hasInteractionsClipboard}>
               Paste interactions
+              <ContextMenuShortcut><Icon name="zap" className="size-3" /></ContextMenuShortcut>
             </ContextMenuItem>
-
-            <ContextMenuSeparator />
           </>
         )}
 
-        {isComponentInstance ? (
+        {(showConvertOption || isCollection) && (
           <>
             <ContextMenuSeparator />
 
+            {showConvertOption && (
+              <ContextMenuItem onClick={handleConvertToCollection} disabled={isConvertDisabled}>
+                Convert to collection
+                <ContextMenuShortcut><Icon name="database" className="size-3" /></ContextMenuShortcut>
+              </ContextMenuItem>
+            )}
+
+            {isCollection && (
+              <ContextMenuItem onClick={handleDetachCollection} disabled={isLocked || isComponentInstance}>
+                Detach collection
+                <ContextMenuShortcut><Icon name="database" className="size-3" /></ContextMenuShortcut>
+              </ContextMenuItem>
+            )}
+          </>
+        )}
+
+        <ContextMenuSeparator />
+
+        {isComponentInstance ? (
+          <>
             <ContextMenuItem onClick={handleEditMasterComponent}>
               Edit master component
+              <ContextMenuShortcut><Icon name="edit" className="size-3" /></ContextMenuShortcut>
             </ContextMenuItem>
 
             <ContextMenuItem onClick={handleDetachFromComponent}>
-              Detach from component
+              Detach component
+              <ContextMenuShortcut><Icon name="detach" className="size-3" /></ContextMenuShortcut>
             </ContextMenuItem>
           </>
         ) : (
           <ContextMenuItem onClick={handleCreateComponent} disabled={isLocked}>
             Create component
+            <ContextMenuShortcut><Icon name="component" className="size-3" /></ContextMenuShortcut>
           </ContextMenuItem>
         )}
 
@@ -649,12 +732,12 @@ export default function LayerContextMenu({
 
             <ContextMenuItem onClick={handleShowJSON}>
               Show JSON
-              <ContextMenuShortcut>🔍</ContextMenuShortcut>
+              <ContextMenuShortcut><Icon name="code" className="size-3" /></ContextMenuShortcut>
             </ContextMenuItem>
 
             <ContextMenuItem onClick={handleSaveAsLayout}>
               Save as Layout
-              <ContextMenuShortcut>📐</ContextMenuShortcut>
+              <ContextMenuShortcut><Icon name="layout" className="size-3" /></ContextMenuShortcut>
             </ContextMenuItem>
           </>
         )}

@@ -540,6 +540,55 @@ function HueBar({ hue, onChange }: HueBarProps) {
   );
 }
 
+// Opacity percentage input that allows empty field while focused
+interface OpacityPercentInputProps {
+  value: number; // 0-1
+  onChange: (a: number) => void;
+  className?: string;
+}
+
+function OpacityPercentInput({ value, onChange, className }: OpacityPercentInputProps) {
+  const displayValue = Math.round(value * 100);
+  const [localValue, setLocalValue] = useState(String(displayValue));
+  const [isFocused, setIsFocused] = useState(false);
+
+  useEffect(() => {
+    if (!isFocused) {
+      setLocalValue(String(Math.round(value * 100)));
+    }
+  }, [value, isFocused]);
+
+  return (
+    <InputGroup className="w-16">
+      <InputGroupInput
+        value={localValue}
+        onChange={(e) => {
+          setLocalValue(e.target.value);
+          const parsed = parseInt(e.target.value);
+          if (!isNaN(parsed)) {
+            const clamped = Math.max(0, Math.min(100, parsed));
+            onChange(clamped / 100);
+          }
+        }}
+        onFocus={() => setIsFocused(true)}
+        onBlur={() => {
+          setIsFocused(false);
+          if (localValue.trim() === '' || isNaN(parseInt(localValue))) {
+            onChange(1);
+            setLocalValue('100');
+          }
+        }}
+        className={className}
+        min={0}
+        max={100}
+      />
+      <InputGroupAddon align="inline-end">
+        <Label variant="muted" className="text-xs">%</Label>
+      </InputGroupAddon>
+    </InputGroup>
+  );
+}
+
 // OpacityBar Component - matches HueBar design
 interface OpacityBarProps {
   opacity: number; // 0-1
@@ -2085,21 +2134,11 @@ export default function ColorPicker({
                         </Button>
                       </InputGroupAddon>
                     </InputGroup>
-                    <InputGroup className="w-16">
-                      <InputGroupInput
-                        value={Math.round(rgbaColor.a * 100)}
-                        onChange={(e) => {
-                          const a = Math.max(0, Math.min(100, parseInt(e.target.value) || 0)) / 100;
-                          handleRgbaChange({ ...rgbaColor, a });
-                        }}
-                        className="w-16 text-xs"
-                        min={0}
-                        max={100}
-                      />
-                      <InputGroupAddon align="inline-end">
-                        <Label variant="muted" className="text-xs">%</Label>
-                      </InputGroupAddon>
-                    </InputGroup>
+                    <OpacityPercentInput
+                      value={rgbaColor.a}
+                      onChange={(a) => handleRgbaChange({ ...rgbaColor, a })}
+                      className="w-16 text-xs"
+                    />
                     {binding?.hasColorFields && (
                       <ColorPickerFieldBinding binding={binding} stopId={null} />
                     )}
@@ -2236,21 +2275,13 @@ export default function ColorPicker({
                               </Button>
                             </InputGroupAddon>
                           </InputGroup>
-                          <InputGroup className="w-16">
-                            <InputGroupInput
-                              value={Math.round(stopRgba.a * 100)}
-                              onChange={(e) => {
-                                const a = Math.max(0, Math.min(100, parseInt(e.target.value) || 0)) / 100;
-                                const newRgba = { ...stopRgba, a };
-                                updateColorStop('linear', selectedStopId, { color: rgbaToHex(newRgba) });
-                              }}
-                              min={0}
-                              max={100}
-                            />
-                            <InputGroupAddon align="inline-end">
-                              <Label variant="muted" className="text-xs">%</Label>
-                            </InputGroupAddon>
-                          </InputGroup>
+                          <OpacityPercentInput
+                            value={stopRgba.a}
+                            onChange={(a) => {
+                              const newRgba = { ...stopRgba, a };
+                              updateColorStop('linear', selectedStopId, { color: rgbaToHex(newRgba) });
+                            }}
+                          />
                           {binding?.hasColorFields && (
                             <ColorPickerFieldBinding binding={binding} stopId={selectedStopId} />
                           )}
@@ -2373,22 +2404,14 @@ export default function ColorPicker({
                               </Button>
                             </InputGroupAddon>
                           </InputGroup>
-                          <InputGroup className="w-16">
-                            <InputGroupInput
-                              value={Math.round(stopRgba.a * 100)}
-                              onChange={(e) => {
-                                const a = Math.max(0, Math.min(100, parseInt(e.target.value) || 0)) / 100;
-                                const newRgba = { ...stopRgba, a };
-                                updateColorStop('radial', selectedStopId, { color: rgbaToHex(newRgba) });
-                              }}
-                              className="w-16 text-xs"
-                              min={0}
-                              max={100}
-                            />
-                            <InputGroupAddon align="inline-end">
-                              <Label variant="muted" className="text-xs">%</Label>
-                            </InputGroupAddon>
-                          </InputGroup>
+                          <OpacityPercentInput
+                            value={stopRgba.a}
+                            onChange={(a) => {
+                              const newRgba = { ...stopRgba, a };
+                              updateColorStop('radial', selectedStopId, { color: rgbaToHex(newRgba) });
+                            }}
+                            className="w-16 text-xs"
+                          />
                           {binding?.hasColorFields && (
                             <ColorPickerFieldBinding binding={binding} stopId={selectedStopId} />
                           )}

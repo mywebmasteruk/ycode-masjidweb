@@ -10,6 +10,7 @@ import {
   createComponentViaApi,
   replaceLayerWithComponentInstance,
   findLayerById,
+  cleanLayersForComponentCreation,
 } from '@/lib/layer-utils';
 import { detachStyleFromLayers, updateLayersWithStyle } from '@/lib/layer-style-utils';
 import { generateId } from '@/lib/utils';
@@ -631,7 +632,9 @@ export const useComponentsStore = create<ComponentsStore>((set, get) => {
       const layerToCopy = findLayerById(layers, layerId);
       if (!layerToCopy) return null;
 
-      const newComponent = await createComponentViaApi(componentName, [layerToCopy]);
+      // Strip CMS bindings that won't be valid inside a standalone component
+      const cleanedLayers = cleanLayersForComponentCreation([layerToCopy]);
+      const newComponent = await createComponentViaApi(componentName, cleanedLayers);
       if (!newComponent) return null;
 
       // Add to local store

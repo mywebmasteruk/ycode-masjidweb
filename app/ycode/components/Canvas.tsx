@@ -181,7 +181,7 @@ function CanvasContent({
     if (!bodyRef.current) return;
     const iframeBody = bodyRef.current.ownerDocument.body;
     const resolvedClasses = editingComponentId
-      ? 'bg-transparent'
+      ? 'bg-transparent relative'
       : (bodyClasses || 'bg-white');
     const classes = resolvedClasses.split(/\s+/).filter(Boolean);
     if (classes.length > 0) {
@@ -609,20 +609,25 @@ export default function Canvas({
       const body = doc.body;
       if (!body) return;
 
-      // Component editing mode: measure actual content bounding box from children
+      // Component editing mode: measure bounding box of all visible layers
+      // including absolutely positioned elements that extend beyond in-flow content
       if (onContentWidthChange) {
         const canvasBody = doc.getElementById('canvas-body');
         if (canvasBody && canvasBody.children.length > 0) {
-          const bodyRect = canvasBody.getBoundingClientRect();
+          const bodyRect = body.getBoundingClientRect();
           let maxChildWidth = 0;
           let maxChildBottom = 0;
-          Array.from(canvasBody.children).forEach(child => {
-            const rect = (child as HTMLElement).getBoundingClientRect();
-            maxChildWidth = Math.max(maxChildWidth, rect.width);
+
+          const allLayers = canvasBody.querySelectorAll('[data-layer-id]');
+          allLayers.forEach(el => {
+            const rect = (el as HTMLElement).getBoundingClientRect();
+            if (rect.width === 0 && rect.height === 0) return;
+            maxChildWidth = Math.max(maxChildWidth, rect.right - bodyRect.left);
             maxChildBottom = Math.max(maxChildBottom, rect.bottom - bodyRect.top);
           });
+
           onContentWidthChange(maxChildWidth);
-          onContentHeightChange(maxChildBottom);
+          onContentHeightChange(Math.max(maxChildBottom, 100));
           return;
         }
       }

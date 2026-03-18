@@ -832,26 +832,8 @@ const RightSidebar = React.memo(function RightSidebar({
     return getRichTextValue(layer?.variables);
   }, []);
 
-  // Handle collection binding change (also resets child bindings when source changes)
-  const handleCollectionChange = (collectionId: string) => {
-    if (!selectedLayerId || !selectedLayer) return;
-
-    const currentCollectionVariable = getCollectionVariable(selectedLayer);
-    handleLayerUpdate(selectedLayerId, {
-      variables: {
-        ...selectedLayer?.variables,
-        collection: collectionId && collectionId !== 'none' ? {
-          id: collectionId,
-          sort_by: currentCollectionVariable?.sort_by,
-          sort_order: currentCollectionVariable?.sort_order,
-          sort_by_inputLayerId: currentCollectionVariable?.sort_by_inputLayerId,
-          sort_order_inputLayerId: currentCollectionVariable?.sort_order_inputLayerId,
-        } : { id: '', source_field_id: undefined, source_field_type: undefined }
-      }
-    });
-
-    // Reset invalid CMS bindings on child layers after the source changed
-    const layerId = selectedLayerId;
+  /** Reset CMS bindings on child layers after the collection source changes */
+  const resetChildBindings = useCallback((layerId: string) => {
     setTimeout(() => {
       const currentLayers = editingComponentId
         ? useComponentsStore.getState().componentDrafts[editingComponentId]
@@ -870,6 +852,37 @@ const RightSidebar = React.memo(function RightSidebar({
         }
       }
     }, 0);
+  }, [editingComponentId, currentPageId, setDraftLayers]);
+
+  // Handle collection binding change (also resets child bindings when source changes)
+  const handleCollectionChange = (collectionId: string) => {
+    if (!selectedLayerId || !selectedLayer) return;
+
+    const currentCollectionVariable = getCollectionVariable(selectedLayer);
+
+    if (!collectionId || collectionId === 'none') {
+      handleLayerUpdate(selectedLayerId, {
+        variables: {
+          ...selectedLayer?.variables,
+          collection: { id: '' }
+        }
+      });
+    } else {
+      handleLayerUpdate(selectedLayerId, {
+        variables: {
+          ...selectedLayer?.variables,
+          collection: {
+            id: collectionId,
+            sort_by: currentCollectionVariable?.sort_by,
+            sort_order: currentCollectionVariable?.sort_order,
+            sort_by_inputLayerId: currentCollectionVariable?.sort_by_inputLayerId,
+            sort_order_inputLayerId: currentCollectionVariable?.sort_order_inputLayerId,
+          }
+        }
+      });
+    }
+
+    resetChildBindings(selectedLayerId);
   };
 
   const SORT_INPUT_VALUE_OPTION = '__input_value__';
@@ -901,11 +914,10 @@ const RightSidebar = React.memo(function RightSidebar({
     const currentCollectionVariable = getCollectionVariable(selectedLayer);
 
     if (value === 'none') {
-      // Clear the collection source
       handleLayerUpdate(selectedLayerId, {
         variables: {
           ...selectedLayer?.variables,
-          collection: { id: '', source_field_id: undefined, source_field_type: undefined, source_field_source: undefined }
+          collection: { id: '' }
         }
       });
     } else if (value.startsWith('inverse:')) {
@@ -956,26 +968,7 @@ const RightSidebar = React.memo(function RightSidebar({
       }
     }
 
-    // Reset invalid CMS bindings on child layers after the source changed
-    const layerId = selectedLayerId;
-    setTimeout(() => {
-      const currentLayers = editingComponentId
-        ? useComponentsStore.getState().componentDrafts[editingComponentId]
-        : currentPageId
-          ? usePagesStore.getState().draftsByPageId[currentPageId]?.layers
-          : null;
-
-      if (!currentLayers) return;
-
-      const cleanedLayers = resetBindingsOnCollectionSourceChange(currentLayers, layerId);
-      if (cleanedLayers !== currentLayers) {
-        if (editingComponentId) {
-          useComponentsStore.getState().updateComponentDraft(editingComponentId, cleanedLayers);
-        } else if (currentPageId) {
-          setDraftLayers(currentPageId, cleanedLayers);
-        }
-      }
-    }, 0);
+    resetChildBindings(selectedLayerId);
   };
 
   // Handle dynamic page source selection (unified handler for field or collection)
@@ -988,7 +981,7 @@ const RightSidebar = React.memo(function RightSidebar({
     let newCollectionVar: CollectionVariable | undefined;
 
     if (value === 'none' || !value) {
-      newCollectionVar = { id: '', source_field_id: undefined, source_field_type: undefined };
+      newCollectionVar = { id: '' };
     } else if (value.startsWith('multi_asset:')) {
       const fieldId = value.replace('multi_asset:', '');
       const selectedField = dynamicPageMultiAssetFields.find(f => f.id === fieldId);
@@ -1043,27 +1036,7 @@ const RightSidebar = React.memo(function RightSidebar({
       variables: { ...selectedLayer?.variables, collection: newCollectionVar }
     });
 
-    // Reset invalid CMS bindings on child layers after the source changed
-    // Use setTimeout to ensure the layer update is applied first
-    const layerId = selectedLayerId;
-    setTimeout(() => {
-      const currentLayers = editingComponentId
-        ? useComponentsStore.getState().componentDrafts[editingComponentId]
-        : currentPageId
-          ? usePagesStore.getState().draftsByPageId[currentPageId]?.layers
-          : null;
-
-      if (!currentLayers) return;
-
-      const cleanedLayers = resetBindingsOnCollectionSourceChange(currentLayers, layerId);
-      if (cleanedLayers !== currentLayers) {
-        if (editingComponentId) {
-          useComponentsStore.getState().updateComponentDraft(editingComponentId, cleanedLayers);
-        } else if (currentPageId) {
-          setDraftLayers(currentPageId, cleanedLayers);
-        }
-      }
-    }, 0);
+    resetChildBindings(selectedLayerId);
   };
 
   // Get current value for dynamic page source dropdown
@@ -1508,19 +1481,21 @@ const RightSidebar = React.memo(function RightSidebar({
       collectionId = undefined;
     }
 
-    if (!collectionId && currentPage?.is_dynamic) {
+    if (!collectionId && !editingComponentId && currentPage?.is_dynamic) {
       collectionId = currentPage.settings?.cms?.collection_id || undefined;
     }
 
     if (!collectionId) return [];
     return fields[collectionId] || [];
-  }, [parentCollectionLayer, fields, currentPage]);
+  }, [parentCollectionLayer, fields, currentPage, editingComponentId]);
 
   // Build field groups for multi-source inline variable selection
+  // Components are page-agnostic, so exclude dynamic page-collection fields when editing a component
   const fieldGroups = useMemo(() => {
     if (!selectedLayerId || !allLayers.length) return undefined;
-    return buildFieldGroupsForLayer(selectedLayerId, allLayers, currentPage, fields, collections);
-  }, [selectedLayerId, allLayers, currentPage, fields, collections]);
+    const page = editingComponentId ? null : currentPage;
+    return buildFieldGroupsForLayer(selectedLayerId, allLayers, page, fields, collections);
+  }, [selectedLayerId, allLayers, currentPage, fields, collections, editingComponentId]);
 
   // Get collection fields for the currently selected collection layer (for Sort By dropdown)
   const selectedCollectionFields = useMemo(() => {
@@ -1583,15 +1558,16 @@ const RightSidebar = React.memo(function RightSidebar({
   }, [parentCollectionFields]);
 
   // Get reference fields from dynamic page's source collection (for top-level collection layers on dynamic pages)
+  // Not available when editing a component — components are page-agnostic
   const dynamicPageReferenceFields = useMemo(() => {
-    if (!currentPage?.is_dynamic) return [];
+    if (editingComponentId || !currentPage?.is_dynamic) return [];
     const collectionId = currentPage.settings?.cms?.collection_id;
     if (!collectionId) return [];
     const collectionFields = fields[collectionId] || [];
     return collectionFields.filter(
       f => (f.type === 'reference' || f.type === 'multi_reference') && f.reference_collection_id
     );
-  }, [currentPage, fields]);
+  }, [editingComponentId, currentPage, fields]);
 
   // Get multi-asset fields from parent context (for multi-asset nested collections)
   const parentMultiAssetFields = useMemo(() => {
@@ -1599,13 +1575,14 @@ const RightSidebar = React.memo(function RightSidebar({
   }, [parentCollectionFields]);
 
   // Get multi-asset fields from dynamic page's source collection
+  // Not available when editing a component — components are page-agnostic
   const dynamicPageMultiAssetFields = useMemo(() => {
-    if (!currentPage?.is_dynamic) return [];
+    if (editingComponentId || !currentPage?.is_dynamic) return [];
     const collectionId = currentPage.settings?.cms?.collection_id;
     if (!collectionId) return [];
     const collectionFields = fields[collectionId] || [];
     return collectionFields.filter(f => isMultipleAssetField(f));
-  }, [currentPage, fields]);
+  }, [editingComponentId, currentPage, fields]);
 
   // Inverse reference fields: fields in OTHER collections that reference the parent collection
   // E.g., if parent is "Authors" and "Books" has a reference field "author" → Authors,
@@ -1614,20 +1591,21 @@ const RightSidebar = React.memo(function RightSidebar({
     const collectionVariable = parentCollectionLayer ? getCollectionVariable(parentCollectionLayer) : null;
     let collectionId = collectionVariable?.id;
     if (collectionId === MULTI_ASSET_COLLECTION_ID) collectionId = undefined;
-    if (!collectionId && currentPage?.is_dynamic) {
+    if (!collectionId && !editingComponentId && currentPage?.is_dynamic) {
       collectionId = currentPage.settings?.cms?.collection_id || undefined;
     }
     if (!collectionId) return [];
     return getInverseReferenceFields(collectionId, fields, collections);
-  }, [parentCollectionLayer, fields, collections, currentPage]);
+  }, [parentCollectionLayer, fields, collections, currentPage, editingComponentId]);
 
   // Inverse reference fields for dynamic page context (top-level collection layers on dynamic pages)
+  // Not available when editing a component — components are page-agnostic
   const dynamicPageInverseReferenceFields = useMemo(() => {
-    if (!currentPage?.is_dynamic) return [];
+    if (editingComponentId || !currentPage?.is_dynamic) return [];
     const collectionId = currentPage.settings?.cms?.collection_id;
     if (!collectionId) return [];
     return getInverseReferenceFields(collectionId, fields, collections);
-  }, [currentPage, fields, collections]);
+  }, [editingComponentId, currentPage, fields, collections]);
 
   // Handle adding custom attribute
   const handleAddAttribute = () => {
@@ -2151,9 +2129,9 @@ const RightSidebar = React.memo(function RightSidebar({
                 onToggle={() => setCollectionBindingOpen(!collectionBindingOpen)}
               >
                 <div className="flex flex-col gap-2">
-                  {/* Source Selector */}
+                  {/* Collection Selector */}
                   <div className="grid grid-cols-3">
-                    <Label variant="muted">Source</Label>
+                    <Label variant="muted">Collection</Label>
                     <div className="col-span-2 *:w-full">
                       {/* When inside a parent collection, show reference fields, multi-asset fields, and inverse reference fields as source options */}
                       {parentCollectionLayer ? (
@@ -2220,8 +2198,8 @@ const RightSidebar = React.memo(function RightSidebar({
                             )}
                           </SelectContent>
                         </Select>
-                      ) : currentPage?.is_dynamic ? (
-                        /* On dynamic pages, show CMS page data fields + all collections */
+                      ) : !editingComponentId && currentPage?.is_dynamic ? (
+                        /* On dynamic pages, show CMS page data fields + all collections (not in component edit mode) */
                         <Select
                           value={getDynamicPageSourceValue === 'none' ? '' : getDynamicPageSourceValue}
                           onValueChange={handleDynamicPageSourceChange}
