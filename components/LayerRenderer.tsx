@@ -1195,19 +1195,24 @@ const LayerItem: React.FC<{
     return items;
   }, [collectionId, allCollectionItems, sourceFieldId, sourceFieldType, sourceFieldSource, collectionLayerData, pageCollectionItemData, collectionLayerItemId, pageCollectionItemId, getAsset, collectionVariable?.filters, isEditMode]);
 
+  const optionsSourceSort = layer.settings?.optionsSource;
   useEffect(() => {
     if (!isEditMode) return;
     if (!collectionVariable?.id) return;
     // Skip fetching for multi-asset collections (they don't have real collection data)
     if (collectionVariable.source_field_type === 'multi_asset') return;
     if (collectionVariable.id === MULTI_ASSET_COLLECTION_ID) return;
-    if (allCollectionItems.length > 0 || isLoadingLayerData) return;
+    if (isLoadingLayerData) return;
+
+    // Checkbox wrappers store sort config in settings.optionsSource, not in the collection variable
+    const sortBy = optionsSourceSort?.sortFieldId || collectionVariable.sort_by;
+    const sortOrder = optionsSourceSort?.sortOrder || collectionVariable.sort_order;
 
     fetchLayerData(
       layer.id,
       collectionVariable.id,
-      collectionVariable.sort_by,
-      collectionVariable.sort_order,
+      sortBy,
+      sortOrder,
       collectionVariable.limit,
       collectionVariable.offset
     );
@@ -1219,7 +1224,8 @@ const LayerItem: React.FC<{
     collectionVariable?.sort_order,
     collectionVariable?.limit,
     collectionVariable?.offset,
-    allCollectionItems.length,
+    optionsSourceSort?.sortFieldId,
+    optionsSourceSort?.sortOrder,
     isLoadingLayerData,
     fetchLayerData,
     layer.id,

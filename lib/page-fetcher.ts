@@ -2059,7 +2059,11 @@ export async function resolveCollectionLayers(
         const { collection: _col, ...restVariables } = layer.variables || {};
         return {
           ...layer,
-          settings: { ...layer.settings, tag: undefined },
+          id: `${layer.id}-fragment`,
+          name: '_fragment',
+          classes: [],
+          design: undefined,
+          attributes: {} as Record<string, any>,
           variables: Object.keys(restVariables).length > 0 ? restVariables : undefined,
           children: generatedChildren,
         };
