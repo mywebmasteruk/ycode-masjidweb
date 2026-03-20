@@ -133,11 +133,7 @@ export default function RichTextLinkPopover({
         const attrs = editor.getAttributes('richTextLink');
         setLinkSettings(getLinkSettingsFromMark(attrs));
       } else {
-        // Default to URL type for new links
-        setLinkSettings({
-          type: 'url',
-          url: { type: 'dynamic_text', data: { content: '' } },
-        });
+        setLinkSettings(null);
       }
     }
 
