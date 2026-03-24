@@ -601,6 +601,42 @@ export function flattenFieldGroups(fieldGroups: FieldGroup[] | undefined): Colle
   return fieldGroups?.flatMap(g => g.fields) || [];
 }
 
+/** Prefix for reference-field-based collection item resolution (page source) */
+export const REF_PAGE_PREFIX = 'ref-page:';
+/** Prefix for reference-field-based collection item resolution (collection source) */
+export const REF_COLLECTION_PREFIX = 'ref-collection:';
+
+/** A resolved option for a reference field pointing to a specific CMS page collection. */
+export interface ReferenceItemOption {
+  value: string;
+  label: string;
+}
+
+/**
+ * Build select options for reference fields that point to a given target collection.
+ * Used in link settings dropdowns to offer "Category - Reference field" style options.
+ */
+export function buildReferenceItemOptions(
+  isDynamicPage: boolean,
+  targetPageCollectionId: string | null,
+  fieldGroups: FieldGroup[] | undefined
+): ReferenceItemOption[] {
+  if (!isDynamicPage || !targetPageCollectionId || !fieldGroups) return [];
+  const options: ReferenceItemOption[] = [];
+  for (const group of fieldGroups) {
+    const prefix = group.source === 'page' ? REF_PAGE_PREFIX : REF_COLLECTION_PREFIX;
+    for (const field of group.fields) {
+      if (field.type === 'reference' && field.reference_collection_id === targetPageCollectionId) {
+        options.push({
+          value: `${prefix}${field.id}`,
+          label: `${field.name} - Reference field`,
+        });
+      }
+    }
+  }
+  return options;
+}
+
 /**
  * Check if any fields match a predicate across all groups.
  */

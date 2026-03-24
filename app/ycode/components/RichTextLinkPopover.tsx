@@ -42,6 +42,8 @@ export interface RichTextLinkPopoverProps {
   disabled?: boolean;
   /** Link types to exclude from the dropdown */
   excludedLinkTypes?: LinkType[];
+  /** Hide "Current page item" and "Reference field" options (e.g. when editing CMS item content) */
+  hidePageContextOptions?: boolean;
 }
 
 /**
@@ -59,6 +61,7 @@ export default function RichTextLinkPopover({
   onOpenChange: controlledOnOpenChange,
   disabled = false,
   excludedLinkTypes = [],
+  hidePageContextOptions = false,
 }: RichTextLinkPopoverProps) {
   // Use controlled state if provided, otherwise internal state
   const [internalOpen, setInternalOpen] = useState(false);
@@ -234,7 +237,7 @@ export default function RichTextLinkPopover({
           isOpen={true}
           onToggle={() => {}}
         >
-        
+
           <RichTextLinkSettings
             value={linkSettings}
             onChange={handleSettingsChange}
@@ -244,6 +247,7 @@ export default function RichTextLinkPopover({
             isInsideCollectionLayer={isInsideCollectionLayer}
             layer={layer}
             excludedLinkTypes={excludedLinkTypes}
+            hidePageContextOptions={hidePageContextOptions}
           />
         </SettingsPanel>
       </PopoverContent>
