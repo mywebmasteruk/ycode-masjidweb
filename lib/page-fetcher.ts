@@ -1768,6 +1768,15 @@ export async function resolveCollectionLayers(
             }
           }
 
+          const _tenantId = process.env.TENANT_ID;
+          if (_tenantId && items.length > 0) {
+            const _fields = await getFieldsByCollectionId(collectionVariable.id, isPublished);
+            const _tidField = _fields.find(f => f.key === 'tenant_id');
+            if (_tidField) {
+              items = items.filter(item => item.values[_tidField.id] === _tenantId);
+            }
+          }
+
           // Apply sorting if specified (since API doesn't handle sortBy yet)
           let sortedItems = items;
           if (sortBy && sortBy !== 'none') {

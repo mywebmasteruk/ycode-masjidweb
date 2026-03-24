@@ -111,7 +111,7 @@ export async function testSupabaseConnection(
  * Cloud overlay: overridden to read x-tenant-id header set by middleware.
  */
 export async function getTenantIdFromHeaders(): Promise<string | null> {
-  return null;
+  return process.env.TENANT_ID || null;
 }
 
 /**

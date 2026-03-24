@@ -131,6 +131,27 @@ export async function getItemsByCollectionId(
     return { items: [], total: 0 };
   }
 
+  const _envTenantId = process.env.TENANT_ID;
+  if (_envTenantId) {
+    const _allFields = await getFieldsByCollectionId(collection_id, is_published);
+    const _tidField = _allFields.find(f => f.key === 'tenant_id');
+    if (_tidField) {
+      const { data: _tenantItems } = await client
+        .from('collection_item_values')
+        .select('item_id')
+        .eq('field_id', _tidField.id)
+        .eq('value', _envTenantId)
+        .eq('is_published', is_published)
+        .is('deleted_at', null);
+      const _tenantItemIds = _tenantItems?.map(r => r.item_id) ?? [];
+      if (filters?.itemIds) {
+        filters.itemIds = filters.itemIds.filter(id => _tenantItemIds.includes(id));
+      } else {
+        filters = { ...filters, itemIds: _tenantItemIds };
+      }
+    }
+  }
+
   // If search is provided, find matching item IDs from values table
   let matchingItemIds: string[] | null = null;
   if (filters?.search && filters.search.trim()) {

@@ -217,6 +217,15 @@ export async function POST(
       valuesWithAutoFields[updatedAtField.id] = now;
     }
 
+    const _envTenantId = process.env.TENANT_ID;
+    const _envTenantSlug = process.env.TENANT_SLUG;
+    if (_envTenantId) {
+      const tidField = fields.find(f => f.key === 'tenant_id');
+      const tslugField = fields.find(f => f.key === 'tenant_slug');
+      if (tidField) valuesWithAutoFields[tidField.id] = _envTenantId;
+      if (tslugField && _envTenantSlug) valuesWithAutoFields[tslugField.id] = _envTenantSlug;
+    }
+
     if (valuesWithAutoFields && typeof valuesWithAutoFields === 'object') {
       await setValuesByFieldName(
         item.id,
