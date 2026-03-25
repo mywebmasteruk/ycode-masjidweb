@@ -1,27 +1,46 @@
-name: Auto-merge main into tenant-multi
+name: Sync main into tenant-multi (PR)
 
 on:
   push:
     branches: [main]
 
+permissions:
+  contents: write
+  pull-requests: write
+
 jobs:
-  merge:
+  open-pr:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: tenant-multi
           fetch-depth: 0
 
-      - name: Configure git
+      - name: Check if tenant-multi is behind main
+        id: check
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin tenant-multi
+          BEHIND=$(git rev-list --count origin/tenant-multi..origin/main)
+          echo "behind=$BEHIND" >> "$GITHUB_OUTPUT"
 
-      - name: Merge main into tenant-multi
+      - name: Create or update PR
+        if: steps.check.outputs.behind != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git fetch origin main
-          git merge origin/main --no-edit
+          EXISTING=$(gh pr list --base tenant-multi --head main --state open --json number -q '.[0].number')
+          if [ -n "$EXISTING" ]; then
+            echo "PR #$EXISTING already open — nothing to do."
+          else
+            gh pr create \
+              --base tenant-multi \
+              --head main \
+              --title "Sync upstream changes from main into tenant-multi" \
+              --body "$(cat <<'EOF'
+          Automated PR created because **main** has new commits that are not yet in **tenant-multi**.
 
-      - name: Push
-        run: git push origin tenant-multi
+          The CI build check must pass before this can be merged. Review the changes, then merge when ready.
+          EOF
+          )"
+            echo "PR created."
+          fi
