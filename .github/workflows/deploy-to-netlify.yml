@@ -44,6 +44,8 @@ jobs:
       - name: Netlify build (Next.js runtime + plugin)
         env:
           NODE_ENV: production
+          # Required on CI: unlike a logged-in laptop, GHA has no Netlify session
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
         run: npx --yes netlify-cli build
 
       - name: Deploy to Netlify (production)
