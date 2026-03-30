@@ -1819,7 +1819,10 @@ export async function resolveCollectionLayers(
             const _fields = await getFieldsByCollectionId(collectionVariable.id, isPublished);
             const _tidField = _fields.find(f => f.key === 'tenant_id');
             if (_tidField) {
-              items = items.filter(item => item.values[_tidField.id] === _tenantId);
+              items = items.filter(item => {
+                const val = item.values[_tidField.id];
+                return !val || val === _tenantId;
+              });
             }
           }
 

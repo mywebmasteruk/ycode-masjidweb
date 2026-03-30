@@ -152,10 +152,12 @@ export async function getItemsByCollectionId(
         .eq('is_published', is_published)
         .is('deleted_at', null);
       const _tenantItemIds = _tenantItems?.map(r => r.item_id) ?? [];
-      if (filters?.itemIds) {
-        filters.itemIds = filters.itemIds.filter(id => _tenantItemIds.includes(id));
-      } else {
-        filters = { ...filters, itemIds: _tenantItemIds };
+      if (_tenantItemIds.length > 0) {
+        if (filters?.itemIds) {
+          filters.itemIds = filters.itemIds.filter(id => _tenantItemIds.includes(id));
+        } else {
+          filters = { ...filters, itemIds: _tenantItemIds };
+        }
       }
     }
   }
