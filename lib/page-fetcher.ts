@@ -1353,7 +1353,8 @@ function resolveRichTextVariables(
     const isBlockNode = (n: any) =>
       n?.type === 'paragraph' || n?.type === 'heading' ||
       n?.type === 'bulletList' || n?.type === 'orderedList' ||
-      n?.type === 'richTextComponent' || n?.type === 'richTextImage';
+      n?.type === 'richTextComponent' || n?.type === 'richTextImage' ||
+      n?.type === 'horizontalRule';
     const hasBlockChildren = result.content.some(isBlockNode);
     if (hasBlockChildren) {
       const lifted: any[] = [];
@@ -1780,14 +1781,16 @@ export async function resolveCollectionLayers(
               sortedItems = items.sort((a, b) => {
                 const aValue = a.values[sortBy] || '';
                 const bValue = b.values[sortBy] || '';
-                const aNum = parseFloat(String(aValue));
-                const bNum = parseFloat(String(bValue));
+                const aStr = String(aValue);
+                const bStr = String(bValue);
+                const aNum = aStr.trim() !== '' ? Number(aStr) : NaN;
+                const bNum = bStr.trim() !== '' ? Number(bStr) : NaN;
 
                 if (!isNaN(aNum) && !isNaN(bNum)) {
                   return sortOrder === 'desc' ? bNum - aNum : aNum - bNum;
                 }
 
-                const comparison = String(aValue).localeCompare(String(bValue));
+                const comparison = aStr.localeCompare(bStr);
                 return sortOrder === 'desc' ? -comparison : comparison;
               });
             }
@@ -3167,6 +3170,14 @@ function renderTiptapToHtml(
     return imgTag;
   }
 
+  // Handle horizontal rules (separator)
+  if (content.type === 'horizontalRule') {
+    const mergedStyles = { ...DEFAULT_TEXT_STYLES, ...textStyles };
+    const hrClass = mergedStyles?.horizontalRule?.classes || '';
+    const classAttr = hrClass ? ` class="${escapeHtml(hrClass)}"` : '';
+    return `<hr${classAttr} />`;
+  }
+
   // Handle embedded component blocks
   if (content.type === 'richTextComponent' && content.attrs?.componentId) {
     if (renderComponentHtml) {
@@ -3702,6 +3713,10 @@ function layerToHtml(
         }
       }
     }
+  }
+
+  if (layer.name === 'option' && layer.settings?.isPlaceholder) {
+    attrs.push('selected');
   }
 
   // For buttons rendered as <a>, resolve link href and add attributes directly

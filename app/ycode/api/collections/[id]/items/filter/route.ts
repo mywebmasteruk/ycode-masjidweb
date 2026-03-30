@@ -537,16 +537,16 @@ export async function POST(
       // then hydrate only the requested page window.
       const sortValueByItem = await getFieldValuesForItems(sortBy, true, matchingIds);
       const sortedIds = [...matchingIds].sort((a, b) => {
-        const aVal = sortValueByItem.get(a) || '';
-        const bVal = sortValueByItem.get(b) || '';
-        const aNum = parseFloat(String(aVal));
-        const bNum = parseFloat(String(bVal));
+        const aStr = String(sortValueByItem.get(a) || '');
+        const bStr = String(sortValueByItem.get(b) || '');
+        const aNum = aStr.trim() !== '' ? Number(aStr) : NaN;
+        const bNum = bStr.trim() !== '' ? Number(bStr) : NaN;
         if (!isNaN(aNum) && !isNaN(bNum)) {
           return sortOrder === 'desc' ? bNum - aNum : aNum - bNum;
         }
         return sortOrder === 'desc'
-          ? String(bVal).localeCompare(String(aVal))
-          : String(aVal).localeCompare(String(bVal));
+          ? bStr.localeCompare(aStr)
+          : aStr.localeCompare(bStr);
       });
       pageItemIds = sortedIds.slice(pageOffset, pageOffset + pageLimit);
       if (pageItemIds.length > 0) {
