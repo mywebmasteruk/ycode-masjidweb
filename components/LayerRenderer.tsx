@@ -241,6 +241,8 @@ const LayerRenderer: React.FC<LayerRendererProps> = ({
               limit={layer._filterConfig!.limit}
               paginationMode={layer._filterConfig!.paginationMode}
               layerTemplate={layer._filterConfig!.layerTemplate}
+              collectionLayerClasses={layer._filterConfig!.collectionLayerClasses}
+              collectionLayerTag={layer._filterConfig!.collectionLayerTag}
             >
               {content}
             </FilterableCollection>
@@ -695,15 +697,27 @@ const LayerItem: React.FC<{
     // Build the name map from DOM: inputLayerId → name attribute (or stripped ID)
     const nameMap: Record<string, string> = {};
     const reverseMap: Record<string, string> = {};
+    const checkboxGroupNames: Record<string, string> = {};
     const inputs = container.querySelectorAll('input, select, textarea');
     inputs.forEach(el => {
-      const inputLayerId = (el as HTMLElement).closest('[data-layer-id]')?.getAttribute('data-layer-id');
+      const inputEl = el as HTMLInputElement;
+      const inputLayerId = inputEl.closest('[data-layer-id]')?.getAttribute('data-layer-id');
       if (!inputLayerId) return;
-      const nameAttr = (el as HTMLInputElement).getAttribute('name');
+      const nameAttr = inputEl.getAttribute('name');
       const paramName = nameAttr || (inputLayerId.startsWith('lyr-') ? inputLayerId.slice(4) : inputLayerId);
       nameMap[inputLayerId] = paramName;
       reverseMap[paramName] = inputLayerId;
+      if (inputEl.type === 'checkbox' || inputEl.type === 'radio') {
+        const cbMatch = inputLayerId.match(/^(.+)-(?:cb|rb)-.+-input$/);
+        if (cbMatch) {
+          checkboxGroupNames[cbMatch[1]] = (nameAttr || '').replace(/\[\]$/, '') || cbMatch[1];
+        }
+      }
     });
+    for (const [baseId, baseName] of Object.entries(checkboxGroupNames)) {
+      nameMap[baseId] = baseName;
+      reverseMap[baseName] = baseId;
+    }
     const inputLayerIds = Object.keys(nameMap);
     store.setNameMap(nameMap);
 
@@ -720,9 +734,20 @@ const LayerItem: React.FC<{
         const directEl = container.querySelector(`input[data-layer-id="${inputLayerId}"], select[data-layer-id="${inputLayerId}"], textarea[data-layer-id="${inputLayerId}"]`) as HTMLInputElement | null;
         inputEl = directEl;
       }
-      if (!inputEl) return;
+      if (!inputEl) {
+        const cbInputs = container.querySelectorAll(
+          `[data-layer-id^="${inputLayerId}-cb-"] input[type="checkbox"], [data-layer-id^="${inputLayerId}-rb-"] input[type="radio"]`
+        );
+        if (cbInputs.length > 0) {
+          const checkedSet = new Set(value.split(','));
+          cbInputs.forEach(cb => {
+            (cb as HTMLInputElement).checked = checkedSet.has((cb as HTMLInputElement).value);
+          });
+        }
+        return;
+      }
       if (inputEl.type === 'checkbox') {
-        inputEl.checked = value === 'true';
+        inputEl.checked = value === inputEl.value || value === 'true';
       } else {
         inputEl.value = value;
       }
@@ -747,6 +772,7 @@ const LayerItem: React.FC<{
     const collectInputValues = () => {
       const nameMap: Record<string, string> = {};
       const inputValues: Record<string, string> = {};
+      const checkboxGroups: Record<string, string[]> = {};
       const inputs = container.querySelectorAll('input, select, textarea');
       inputs.forEach(el => {
         const inputEl = el as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
@@ -754,9 +780,24 @@ const LayerItem: React.FC<{
         if (!inputLayerId) return;
         const nameAttr = inputEl.getAttribute('name');
         if (nameAttr) nameMap[inputLayerId] = nameAttr;
-        const value = inputEl.type === 'checkbox' ? (inputEl as HTMLInputElement).checked.toString() : inputEl.value;
-        inputValues[inputLayerId] = value;
+        if (inputEl.type === 'checkbox') {
+          const checked = (inputEl as HTMLInputElement).checked;
+          const val = checked ? ((inputEl as HTMLInputElement).value || 'true') : '';
+          inputValues[inputLayerId] = val;
+          const cbMatch = inputLayerId.match(/^(.+)-(?:cb|rb)-.+-input$/);
+          if (cbMatch) {
+            const baseId = cbMatch[1];
+            if (!checkboxGroups[baseId]) checkboxGroups[baseId] = [];
+            if (val) checkboxGroups[baseId].push(val);
+            if (nameAttr) nameMap[baseId] = nameAttr.replace(/\[\]$/, '');
+          }
+        } else {
+          inputValues[inputLayerId] = inputEl.value;
+        }
       });
+      for (const [baseId, values] of Object.entries(checkboxGroups)) {
+        inputValues[baseId] = values.join(',');
+      }
       setFilterValues(filterLayerId, inputValues);
       if (Object.keys(nameMap).length > 0) {
         useFilterStore.getState().setNameMap(nameMap);
@@ -2046,9 +2087,17 @@ const LayerItem: React.FC<{
       }
 
       if (isEditMode && layer.settings?.optionsSource?.collectionId) {
+        const placeholderChild = effectiveLayer.children?.find(
+          (c) => c.name === 'option' && c.settings?.isPlaceholder
+        );
+        const editPlaceholder = (
+          placeholderChild?.variables?.text?.type === 'dynamic_text'
+            ? placeholderChild.variables.text.data.content
+            : null
+        ) || '(Options from collection)';
         return (
           <Tag {...elementProps}>
-            <option disabled value="">(Options from collection)</option>
+            <option disabled value="">{editPlaceholder}</option>
           </Tag>
         );
       }

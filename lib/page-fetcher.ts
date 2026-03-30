@@ -1944,6 +1944,8 @@ export async function resolveCollectionLayers(
               limit: isPaginated ? paginationConfig.items_per_page : collectionVariable.limit,
               paginationMode: isPaginated ? paginationConfig.mode : undefined,
               layerTemplate: layer.children || [],
+              collectionLayerClasses: Array.isArray(layer.classes) ? layer.classes : (layer.classes ? [layer.classes] : []),
+              collectionLayerTag: layer.name || 'div',
             } : undefined,
           };
         } catch (error) {
@@ -1981,13 +1983,22 @@ export async function resolveCollectionLayers(
         const defaultItemId = opts.defaultItemId;
         const hasDefault = !!(defaultItemId && sourceItems.some(i => i.id === defaultItemId));
 
+        const existingPlaceholder = layer.children?.find(
+          (c) => c.name === 'option' && c.settings?.isPlaceholder
+        );
+        const placeholderText = (
+          existingPlaceholder?.variables?.text?.type === 'dynamic_text'
+            ? existingPlaceholder.variables.text.data.content
+            : null
+        ) || 'Select...';
         const placeholderOption: Layer = {
-          id: `${layer.id}-opt-placeholder`,
+          id: existingPlaceholder?.id || `${layer.id}-opt-placeholder`,
           name: 'option',
           classes: '',
-          attributes: { value: '' },
+          attributes: { value: '', disabled: true, hidden: true },
+          settings: { isPlaceholder: true },
           variables: {
-            text: { type: 'dynamic_text' as const, data: { content: 'Select...' } },
+            text: { type: 'dynamic_text' as const, data: { content: placeholderText } },
           },
         };
 
@@ -2008,7 +2019,7 @@ export async function resolveCollectionLayers(
           ...layer,
           attributes: {
             ...(layer.attributes || {}),
-            ...(hasDefault ? { value: defaultItemId } : {}),
+            ...(hasDefault ? { value: defaultItemId } : { value: '' }),
           },
           children: [placeholderOption, ...generatedOptions],
         };
@@ -2052,6 +2063,7 @@ export async function resolveCollectionLayers(
       const templateInput = findInputByType(layer.children, inputType);
       const templateText = layer.children?.find(c => c.name === 'text');
 
+      const inputIdPrefix = templateInput?.id || layer.id;
       const baseName = templateInput?.attributes?.name || templateInput?.settings?.id || layer.id;
       const inputName = inputType === 'checkbox'
         ? (baseName.endsWith('[]') ? baseName : `${baseName}[]`)
@@ -2067,13 +2079,13 @@ export async function resolveCollectionLayers(
           : opts.defaultItemId === item.id;
 
         return {
-          id: `${layer.id}-${prefix}-${item.id}`,
+          id: `${inputIdPrefix}-${prefix}-${item.id}`,
           name: 'div',
           settings: { tag: 'label' },
           classes: layer.classes || '',
           children: [
             {
-              id: `${layer.id}-${prefix}-${item.id}-input`,
+              id: `${inputIdPrefix}-${prefix}-${item.id}-input`,
               name: 'input',
               classes: templateInput?.classes || '',
               attributes: {
@@ -2086,7 +2098,7 @@ export async function resolveCollectionLayers(
               design: templateInput?.design,
             },
             {
-              id: `${layer.id}-${prefix}-${item.id}-text`,
+              id: `${inputIdPrefix}-${prefix}-${item.id}-text`,
               name: 'text',
               classes: templateText?.classes || '',
               design: templateText?.design,
@@ -2549,7 +2561,10 @@ export async function renderCollectionItemsToHtml(
   folders?: PageFolder[],
   collectionItemSlugs?: Record<string, string>,
   locale?: Locale | null,
-  translations?: Record<string, Translation>
+  translations?: Record<string, Translation>,
+  tenantId?: string,
+  collectionLayerClasses?: string[],
+  collectionLayerTag?: string,
 ): Promise<string> {
   // Fetch collection fields for field resolution
   const collectionFields = await getFieldsByCollectionId(collectionId, isPublished, { excludeComputed: true });
@@ -2630,6 +2645,9 @@ export async function renderCollectionItemsToHtml(
         assetMap = { ...assetMap, ...additionalAssets };
       }
 
+      // Apply conditional visibility based on this item's field values
+      resolvedLayers = filterByVisibility(resolvedLayers, item.values);
+
       // Convert layers to HTML (handles fragments from resolved collections)
       const itemHtml = resolvedLayers
         .map((layer) =>
@@ -2637,9 +2655,13 @@ export async function renderCollectionItemsToHtml(
         )
         .join('');
 
-      // Wrap in collection item container with the proper layer ID format
+      // Wrap in collection item container matching the SSR clone structure
       const itemWrapperId = `${collectionLayerId}-item-${item.id}`;
-      return `<div data-layer-id="${itemWrapperId}" data-collection-item-id="${item.id}">${itemHtml}</div>`;
+      const wrapperTag = collectionLayerTag || 'div';
+      const wrapperClassStr = Array.isArray(collectionLayerClasses) && collectionLayerClasses.length > 0
+        ? ` class="${collectionLayerClasses.join(' ')}"`
+        : '';
+      return `<${wrapperTag} data-layer-id="${itemWrapperId}" data-collection-item-id="${item.id}"${wrapperClassStr}>${itemHtml}</${wrapperTag}>`;
     })
   );
 

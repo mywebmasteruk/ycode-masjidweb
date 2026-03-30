@@ -87,7 +87,7 @@ import { useLayerLocks } from '@/hooks/use-layer-locks';
 import { classesToDesign, mergeDesign, removeConflictsForClass, getRemovedPropertyClasses } from '@/lib/tailwind-class-mapper';
 import { cn } from '@/lib/utils';
 import { sanitizeHtmlId } from '@/lib/html-utils';
-import { isFieldVariable, getCollectionVariable, findParentCollectionLayer, findAllParentCollectionLayers, isTextEditable, isTextContentLayer, isRichTextLayer, isHeadingLayer, findLayerWithParent, resetBindingsOnCollectionSourceChange, isInputInsideFilter, getLayerIndexes, indexedFindLayerById, indexedFindLayerWithParent, indexedFindParentCollectionLayer } from '@/lib/layer-utils';
+import { isFieldVariable, getCollectionVariable, findParentCollectionLayer, findAllParentCollectionLayers, isTextEditable, isTextContentLayer, isRichTextLayer, isHeadingLayer, findLayerWithParent, resetBindingsOnCollectionSourceChange, isInputInsideFilter, resolveFilterInputId, getLayerIndexes, indexedFindLayerById, indexedFindLayerWithParent, indexedFindParentCollectionLayer } from '@/lib/layer-utils';
 import { detachSpecificLayerFromComponent } from '@/lib/component-utils';
 import { convertContentToValue, parseValueToContent } from '@/lib/cms-variables-utils';
 import { createTextComponentVariableValue } from '@/lib/variable-utils';
@@ -1087,6 +1087,7 @@ const RightSidebar = React.memo(function RightSidebar({
 
     startElementPicker(
       (layerId: string) => {
+        const resolvedId = resolveFilterInputId(layerId, allLayers);
         const freshLayer = selectedLayerRef.current;
         if (!freshLayer) return;
         const freshVariable = getCollectionVariable(freshLayer);
@@ -1096,7 +1097,7 @@ const RightSidebar = React.memo(function RightSidebar({
             ...freshLayer.variables,
             collection: {
               ...freshVariable,
-              [key]: layerId,
+              [key]: resolvedId,
               ...(key === 'sort_by_inputLayerId' ? { sort_by: 'none' } : {}),
               ...(key === 'sort_order_inputLayerId' ? { sort_order: undefined } : {}),
             },
