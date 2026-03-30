@@ -6,22 +6,32 @@ import PasswordForm from '@/components/PasswordForm';
 import { generatePageMetadata, fetchGlobalPageSettings } from '@/lib/generate-page-metadata';
 import { parseAuthCookie, getPasswordProtection, fetchFoldersForAuth } from '@/lib/page-auth';
 import type { Metadata } from 'next';
-import { connection } from 'next/server';
 
-// Root must stay dynamic: a cold DB / post-seed homepage must not be stuck behind
-// an empty unstable_cache entry or year-long CDN HTML from the first miss.
-export const dynamic = 'force-dynamic';
-export const revalidate = 0;
+// Static by default for performance, dynamic only when pagination is requested
+export const revalidate = false; // Cache indefinitely until publish invalidates
 
 /**
- * Fetch published homepage (uncached). Publish flow still calls revalidateTag for
- * other cached segments; this path always reflects current Supabase state.
+ * Fetch homepage data from database
+ * Cached with tag-based revalidation (no time-based stale cache)
  */
 async function fetchPublishedHomepage() {
   try {
-    return await fetchHomepage(true);
+    return await unstable_cache(
+      async () => fetchHomepage(true),
+      ['data-for-route-/'],
+      {
+        tags: ['all-pages', 'route-/'], // all-pages for full publish invalidation, route-/ for targeted
+        revalidate: false,
+      }
+    )();
   } catch {
-    return null;
+    // Fallback to uncached fetch when data exceeds cache size limit (2MB).
+    // If runtime credentials are unavailable (e.g. build-time), return null.
+    try {
+      return await fetchHomepage(true);
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -73,7 +83,7 @@ async function fetchCachedErrorPage(errorCode: 401) {
 }
 
 export default async function Home() {
-  await connection();
+  // Cache-first homepage path; pagination is served through internal dynamic routes.
   const data = await fetchPublishedHomepage();
 
   // If no published homepage exists, show default landing page
@@ -203,9 +213,13 @@ export async function generateMetadata(): Promise<Metadata> {
     }
   }
 
-  return generatePageMetadata(data.page, {
-    fallbackTitle: 'Home',
-    pagePath: '/',
-    globalSeoSettings: globalSettings,
-  });
+  return unstable_cache(
+    async () => generatePageMetadata(data.page, {
+      fallbackTitle: 'Home',
+      pagePath: '/',
+      globalSeoSettings: globalSettings,
+    }),
+    ['data-for-route-/-meta'],
+    { tags: ['all-pages', 'route-/'], revalidate: false }
+  )();
 }

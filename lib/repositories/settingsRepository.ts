@@ -4,7 +4,7 @@
  * Data access layer for application settings stored in the database
  */
 
-import { getSupabaseAdmin, getTenantIdFromHeaders, scopeToTenantRow } from '@/lib/supabase-server';
+import { getSupabaseAdmin } from '@/lib/supabase-server';
 import type { Setting } from '@/types';
 
 /**
@@ -18,15 +18,10 @@ export async function getAllSettings(): Promise<Setting[]> {
     throw new Error('Failed to initialize Supabase client');
   }
 
-  const tid = await getTenantIdFromHeaders();
-
-  let settingsQ = client
+  const { data, error } = await client
     .from('settings')
-    .select('*');
-
-  settingsQ = scopeToTenantRow(settingsQ, tid);
-
-  const { data, error } = await settingsQ.order('key', { ascending: true });
+    .select('*')
+    .order('key', { ascending: true });
 
   if (error) {
     throw new Error(`Failed to fetch settings: ${error.message}`);
@@ -80,16 +75,10 @@ export async function getSettingsByKeys(keys: string[]): Promise<Record<string, 
     throw new Error('Failed to initialize Supabase client');
   }
 
-  const tid = await getTenantIdFromHeaders();
-
-  let query = client
+  const { data, error } = await client
     .from('settings')
     .select('key, value')
     .in('key', keys);
-
-  query = scopeToTenantRow(query, tid);
-
-  const { data, error } = await query;
 
   if (error) {
     throw new Error(`Failed to fetch settings: ${error.message}`);
@@ -121,10 +110,9 @@ export async function setSetting(key: string, value: any): Promise<Setting> {
     .upsert({
       key,
       value,
-      tenant_id: await getTenantIdFromHeaders(),
       updated_at: new Date().toISOString(),
     }, {
-      onConflict: 'tenant_id,key',
+      onConflict: 'key',
     })
     .select()
     .single();
@@ -181,18 +169,16 @@ export async function setSettings(settings: Record<string, any>): Promise<number
   // Upsert settings with non-null values
   if (toUpsert.length > 0) {
     const now = new Date().toISOString();
-    const tid = await getTenantIdFromHeaders();
     const records = toUpsert.map(([key, value]) => ({
       key,
       value,
-      tenant_id: tid,
       updated_at: now,
     }));
 
     const { error } = await client
       .from('settings')
       .upsert(records, {
-        onConflict: 'tenant_id,key',
+        onConflict: 'key',
       });
 
     if (error) {

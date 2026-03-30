@@ -71,8 +71,5 @@ next-env.d.ts
 # scripts
 release.sh
 
-# Local Netlify folder
-.netlify
-
-# Local Deno lockfile (tooling / edge experiments; app build uses npm)
-/deno.lock
+# netlify local artifacts
+.netlify/

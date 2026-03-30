@@ -1,4 +1,4 @@
-import { getSupabaseAdmin, getTenantIdFromHeaders, scopeToTenantRow } from '@/lib/supabase-server';
+import { getSupabaseAdmin } from '@/lib/supabase-server';
 import { SUPABASE_QUERY_LIMIT, SUPABASE_WRITE_BATCH_SIZE } from '@/lib/supabase-constants';
 import { cleanupOrphanedStorageFiles } from '@/lib/storage-utils';
 import { generateFontContentHash } from '@/lib/hash-utils';
@@ -8,22 +8,17 @@ import type { Font, CreateFontData, UpdateFontData } from '@/types';
  * Get all fonts (drafts only)
  */
 export async function getAllFonts(): Promise<Font[]> {
-  const tid = await getTenantIdFromHeaders();
   const client = await getSupabaseAdmin();
 
   if (!client) {
     throw new Error('Supabase not configured');
   }
 
-  let fontsQ = client
+  const { data, error } = await client
     .from('fonts')
     .select('*')
     .eq('is_published', false)
-    .is('deleted_at', null);
-
-  fontsQ = scopeToTenantRow(fontsQ, tid);
-
-  const { data, error } = await fontsQ
+    .is('deleted_at', null)
     .order('created_at', { ascending: true })
     .limit(SUPABASE_QUERY_LIMIT);
 
@@ -36,22 +31,17 @@ export async function getAllFonts(): Promise<Font[]> {
  * Get all published fonts
  */
 export async function getPublishedFonts(): Promise<Font[]> {
-  const tid = await getTenantIdFromHeaders();
   const client = await getSupabaseAdmin();
 
   if (!client) {
     throw new Error('Supabase not configured');
   }
 
-  let pubFontsQ = client
+  const { data, error } = await client
     .from('fonts')
     .select('*')
     .eq('is_published', true)
-    .is('deleted_at', null);
-
-  pubFontsQ = scopeToTenantRow(pubFontsQ, tid);
-
-  const { data, error } = await pubFontsQ
+    .is('deleted_at', null)
     .order('created_at', { ascending: true })
     .limit(SUPABASE_QUERY_LIMIT);
 
@@ -64,23 +54,19 @@ export async function getPublishedFonts(): Promise<Font[]> {
  * Get a font by ID (draft)
  */
 export async function getFontById(id: string): Promise<Font | null> {
-  const tid = await getTenantIdFromHeaders();
   const client = await getSupabaseAdmin();
 
   if (!client) {
     throw new Error('Supabase not configured');
   }
 
-  let fontByIdQ = client
+  const { data, error } = await client
     .from('fonts')
     .select('*')
     .eq('id', id)
     .eq('is_published', false)
-    .is('deleted_at', null);
-
-  fontByIdQ = scopeToTenantRow(fontByIdQ, tid);
-
-  const { data, error } = await fontByIdQ.single();
+    .is('deleted_at', null)
+    .single();
 
   if (error && error.code !== 'PGRST116') {
     throw new Error(`Failed to fetch font: ${error.message}`);

@@ -1,0 +1,32 @@
+name: Sync fork from upstream (daily)
+
+on:
+  schedule:
+    - cron: "0 6 * * *" # 06:00 UTC every day
+  workflow_dispatch: # allow manual trigger
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sync fork's main from ycode/ycode
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RESPONSE=$(gh api repos/${{ github.repository }}/merge-upstream \
+            --method POST \
+            --field branch=main \
+            2>&1) || true
+
+          echo "$RESPONSE"
+
+          if echo "$RESPONSE" | grep -q '"merge_type"'; then
+            echo "::notice::Fork synced successfully."
+          elif echo "$RESPONSE" | grep -q 'already in sync'; then
+            echo "::notice::Fork is already up to date."
+          else
+            echo "::warning::Unexpected response — check output above."
+          fi

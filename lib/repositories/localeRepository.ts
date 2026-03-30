@@ -5,28 +5,23 @@
  * Supports draft/published workflow with composite primary key (id, is_published)
  */
 
-import { getSupabaseAdmin, getTenantIdFromHeaders, scopeToTenantRow } from '@/lib/supabase-server';
+import { getSupabaseAdmin } from '@/lib/supabase-server';
 import type { Locale, CreateLocaleData, UpdateLocaleData } from '@/types';
 
 /**
  * Get all locales (draft by default)
  */
 export async function getAllLocales(isPublished: boolean = false): Promise<Locale[]> {
-  const tid = await getTenantIdFromHeaders();
   const client = await getSupabaseAdmin();
   if (!client) {
     throw new Error('Failed to initialize Supabase client');
   }
 
-  let locQ = client
+  const { data, error } = await client
     .from('locales')
     .select('*')
     .eq('is_published', isPublished)
-    .is('deleted_at', null);
-
-  locQ = scopeToTenantRow(locQ, tid);
-
-  const { data, error } = await locQ
+    .is('deleted_at', null)
     .order('is_default', { ascending: false })
     .order('label', { ascending: true });
 
@@ -42,22 +37,18 @@ export async function getAllLocales(isPublished: boolean = false): Promise<Local
  * With composite primary key, we need to specify is_published to get a single row
  */
 export async function getLocaleById(id: string, isPublished: boolean = false): Promise<Locale | null> {
-  const tid = await getTenantIdFromHeaders();
   const client = await getSupabaseAdmin();
   if (!client) {
     throw new Error('Failed to initialize Supabase client');
   }
 
-  let locByIdQ = client
+  const { data, error } = await client
     .from('locales')
     .select('*')
     .eq('id', id)
     .eq('is_published', isPublished)
-    .is('deleted_at', null);
-
-  locByIdQ = scopeToTenantRow(locByIdQ, tid);
-
-  const { data, error } = await locByIdQ.single();
+    .is('deleted_at', null)
+    .single();
 
   if (error) {
     if (error.code === 'PGRST116') {
@@ -73,22 +64,18 @@ export async function getLocaleById(id: string, isPublished: boolean = false): P
  * Get locale by code (draft by default)
  */
 export async function getLocaleByCode(code: string, isPublished: boolean = false): Promise<Locale | null> {
-  const tid = await getTenantIdFromHeaders();
   const client = await getSupabaseAdmin();
   if (!client) {
     throw new Error('Failed to initialize Supabase client');
   }
 
-  let locByCodeQ = client
+  const { data, error } = await client
     .from('locales')
     .select('*')
     .eq('code', code)
     .eq('is_published', isPublished)
-    .is('deleted_at', null);
-
-  locByCodeQ = scopeToTenantRow(locByCodeQ, tid);
-
-  const { data, error } = await locByCodeQ.single();
+    .is('deleted_at', null)
+    .single();
 
   if (error) {
     if (error.code === 'PGRST116') {
@@ -104,22 +91,18 @@ export async function getLocaleByCode(code: string, isPublished: boolean = false
  * Get the default locale (draft by default)
  */
 export async function getDefaultLocale(isPublished: boolean = false): Promise<Locale | null> {
-  const tid = await getTenantIdFromHeaders();
   const client = await getSupabaseAdmin();
   if (!client) {
     throw new Error('Failed to initialize Supabase client');
   }
 
-  let defLocQ = client
+  const { data, error } = await client
     .from('locales')
     .select('*')
     .eq('is_default', true)
     .eq('is_published', isPublished)
-    .is('deleted_at', null);
-
-  defLocQ = scopeToTenantRow(defLocQ, tid);
-
-  const { data, error } = await defLocQ.single();
+    .is('deleted_at', null)
+    .single();
 
   if (error) {
     if (error.code === 'PGRST116') {

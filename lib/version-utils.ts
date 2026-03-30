@@ -449,7 +449,7 @@ export function createInversePatch(from: any, patch: JsonPatch): JsonPatch {
         inverse.unshift({ op: 'remove', path: op.path });
         break;
 
-      case 'remove': {
+      case 'remove':
         // Get the value that was removed
         let removedValue = from;
         for (const part of pathParts) {
@@ -457,9 +457,8 @@ export function createInversePatch(from: any, patch: JsonPatch): JsonPatch {
         }
         inverse.unshift({ op: 'add', path: op.path, value: removedValue });
         break;
-      }
 
-      case 'replace': {
+      case 'replace':
         // Get the original value
         let originalValue = from;
         for (const part of pathParts) {
@@ -467,7 +466,6 @@ export function createInversePatch(from: any, patch: JsonPatch): JsonPatch {
         }
         inverse.unshift({ op: 'replace', path: op.path, value: originalValue });
         break;
-      }
 
       case 'move':
         if (op.from) {

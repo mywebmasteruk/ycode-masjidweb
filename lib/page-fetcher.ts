@@ -1,10 +1,5 @@
 import { cache } from 'react';
-import {
-  getSupabaseAdmin,
-  getTenantIdFromHeaders,
-  resolveTenantScope,
-  scopeToTenantRow,
-} from '@/lib/supabase-server';
+import { getSupabaseAdmin } from '@/lib/supabase-server';
 import { buildSlugPath, buildDynamicPageUrl, buildLocalizedSlugPath, buildLocalizedDynamicPageUrl, detectLocaleFromPath, matchPageWithTranslatedSlugs, matchDynamicPageWithTranslatedSlugs } from '@/lib/page-utils';
 import { getItemWithValues, getItemsWithValues, getItemIdsByFieldValue } from '@/lib/repositories/collectionItemRepository';
 import { getFieldsByCollectionId } from '@/lib/repositories/collectionFieldRepository';
@@ -675,33 +670,16 @@ export const fetchHomepage = cache(async function fetchHomepage(
       return null;
     }
 
-    const resolvedTenant = await resolveTenantScope(tenantId);
-
-    let localesQ = supabase
-      .from('locales')
-      .select('*')
-      .eq('is_published', isPublished)
-      .is('deleted_at', null);
-    localesQ = scopeToTenantRow(localesQ, resolvedTenant);
-
-    let pagesQ = supabase
-      .from('pages')
-      .select('*')
-      .eq('is_index', true)
-      .is('page_folder_id', null)
-      .eq('is_published', isPublished)
-      .is('deleted_at', null)
-      .limit(1);
-    pagesQ = scopeToTenantRow(pagesQ, resolvedTenant);
-
-    const [localesRes, homeRes, componentsResult] = await Promise.all([
-      localesQ,
-      pagesQ.maybeSingle(),
-      preloadedComponents ? Promise.resolve(preloadedComponents) : fetchComponents(supabase, isPublished, resolvedTenant),
+    // Fetch locales, homepage, and components in parallel
+    const [
+      { data: availableLocales },
+      { data: homepage },
+      componentsResult,
+    ] = await Promise.all([
+      supabase.from('locales').select('*').eq('is_published', isPublished).is('deleted_at', null),
+      supabase.from('pages').select('*').eq('is_index', true).is('page_folder_id', null).eq('is_published', isPublished).is('deleted_at', null).limit(1).single(),
+      preloadedComponents ? Promise.resolve(preloadedComponents) : fetchComponents(supabase, isPublished),
     ]);
-
-    const availableLocales = localesRes.data;
-    const homepage = homeRes.data;
 
     if (!homepage) {
       return null;
@@ -709,18 +687,18 @@ export const fetchHomepage = cache(async function fetchHomepage(
 
     const components = componentsResult;
 
-    let layersQ = supabase
+    // Get layers for homepage (depends on homepage.id)
+    const { data: pageLayers, error: layersError } = await supabase
       .from('page_layers')
       .select('*')
       .eq('page_id', homepage.id)
       .eq('is_published', isPublished)
       .is('deleted_at', null)
       .order('created_at', { ascending: false })
-      .limit(1);
-    layersQ = scopeToTenantRow(layersQ, resolvedTenant);
-    const { data: pageLayers, error: layersError } = await layersQ.maybeSingle();
+      .limit(1)
+      .single();
 
-    if (layersError || !pageLayers) {
+    if (layersError) {
       return null;
     }
 
@@ -886,18 +864,12 @@ function injectTranslatedText(
  * @param isPublished - Whether to fetch published or draft components (defaults to false for draft)
  * @returns Array of components or empty array if fetch fails
  */
-async function fetchComponents(
-  supabase: any,
-  isPublished: boolean = false,
-  scopeTenantId?: string | null,
-): Promise<Component[]> {
-  let q = supabase
+async function fetchComponents(supabase: any, isPublished: boolean = false): Promise<Component[]> {
+  const { data: components } = await supabase
     .from('components')
     .select('*')
     .eq('is_published', isPublished)
     .is('deleted_at', null);
-  q = scopeToTenantRow(q, scopeTenantId ?? null);
-  const { data: components } = await q;
   return components || [];
 }
 
@@ -1810,19 +1782,6 @@ export async function resolveCollectionLayers(
                   pageCollectionCounts: {},
                 })
               );
-            }
-          }
-
-          // Defense-in-depth: tenant filter on resolved items (headers/session, then env)
-          const _tenantId = await getTenantIdFromHeaders();
-          if (_tenantId && items.length > 0) {
-            const _fields = await getFieldsByCollectionId(collectionVariable.id, isPublished);
-            const _tidField = _fields.find(f => f.key === 'tenant_id');
-            if (_tidField) {
-              items = items.filter(item => {
-                const val = item.values[_tidField.id];
-                return !val || val === _tenantId;
-              });
             }
           }
 
