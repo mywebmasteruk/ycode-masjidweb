@@ -3,7 +3,7 @@ import { createServerClient } from '@supabase/ssr';
 import { CookieOptions } from '@supabase/ssr';
 import { credentials } from '@/lib/credentials';
 import { cookies } from 'next/headers';
-import { supabaseCookieOptionsForHost } from '@/lib/supabase-cookie-domain';
+import { supabaseCookieOptionsForRequestHeaders } from '@/lib/supabase-cookie-domain';
 
 /**
  * GET /ycode/api/auth/callback
@@ -31,11 +31,7 @@ export async function GET(request: NextRequest) {
       }
 
       const cookieStore = await cookies();
-      const host = request.headers.get('host') || '';
-      const cookieOpts = supabaseCookieOptionsForHost(
-        host,
-        process.env.TENANT_DOMAIN_SUFFIX || process.env.NEXT_PUBLIC_TENANT_DOMAIN_SUFFIX,
-      );
+      const cookieOpts = supabaseCookieOptionsForRequestHeaders(request.headers);
 
       // Create Supabase client
       const supabase = createServerClient(

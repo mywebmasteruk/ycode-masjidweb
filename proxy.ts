@@ -1,6 +1,7 @@
 import { createServerClient } from '@supabase/ssr';
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
+import { supabaseCookieOptionsForRequestHeaders } from '@/lib/supabase-cookie-domain';
 
 /**
  * Public API routes that skip authentication.
@@ -78,6 +79,8 @@ async function verifyApiAuth(request: NextRequest): Promise<NextResponse | null>
 
   let response = NextResponse.next({ request });
 
+  const cookieOpts = supabaseCookieOptionsForRequestHeaders(request.headers);
+
   const supabase = createServerClient(config.url, config.anonKey, {
     cookies: {
       getAll() {
@@ -93,6 +96,7 @@ async function verifyApiAuth(request: NextRequest): Promise<NextResponse | null>
         });
       },
     },
+    ...(cookieOpts ? { cookieOptions: cookieOpts } : {}),
   });
 
   const { data: { user } } = await supabase.auth.getUser();

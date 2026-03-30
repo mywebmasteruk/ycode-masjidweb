@@ -3,6 +3,7 @@ import { createServerClient } from '@supabase/ssr';
 import { CookieOptions } from '@supabase/ssr';
 import { credentials } from '@/lib/credentials';
 import { cookies } from 'next/headers';
+import { supabaseCookieOptionsForRequestHeaders } from '@/lib/supabase-cookie-domain';
 import { noCache } from '@/lib/api-response';
 
 /**
@@ -27,6 +28,7 @@ export async function GET(request: NextRequest) {
     }
 
     const cookieStore = await cookies();
+    const cookieOpts = supabaseCookieOptionsForRequestHeaders(request.headers);
 
     // Create Supabase client
     const supabase = createServerClient(
@@ -44,6 +46,7 @@ export async function GET(request: NextRequest) {
             cookieStore.set({ name, value: '', ...options });
           },
         },
+        ...(cookieOpts ? { cookieOptions: cookieOpts } : {}),
       }
     );
 

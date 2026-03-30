@@ -4,7 +4,8 @@
  */
 
 import { createServerClient } from '@supabase/ssr';
-import { cookies } from 'next/headers';
+import { cookies, headers } from 'next/headers';
+import { supabaseCookieOptionsForRequestHeaders } from '@/lib/supabase-cookie-domain';
 import { credentials } from '@/lib/credentials';
 import { parseSupabaseConfig } from '@/lib/supabase-config-parser';
 import type { SupabaseClient, User } from '@supabase/supabase-js';
@@ -26,6 +27,8 @@ export async function getAuthUser(): Promise<AuthResult | null> {
 
     const parsed = parseSupabaseConfig(config);
     const cookieStore = await cookies();
+    const h = await headers();
+    const cookieOpts = supabaseCookieOptionsForRequestHeaders(h);
 
     const client = createServerClient(parsed.projectUrl, parsed.anonKey, {
       cookies: {
@@ -38,6 +41,7 @@ export async function getAuthUser(): Promise<AuthResult | null> {
           });
         },
       },
+      ...(cookieOpts ? { cookieOptions: cookieOpts } : {}),
     });
 
     const { data: { user }, error } = await client.auth.getUser();
