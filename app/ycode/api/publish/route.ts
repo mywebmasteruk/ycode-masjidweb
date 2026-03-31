@@ -6,6 +6,7 @@ import { publishLocalisation } from '@/lib/services/localisationService';
 import { publishFolders } from '@/lib/services/folderService';
 import { publishCSS, savePublishedAt } from '@/lib/services/settingsService';
 import { clearAllCache } from '@/lib/services/cacheService';
+import { getSettingByKey } from '@/lib/repositories/settingsRepository';
 import { getAllDraftPages, hardDeleteSoftDeletedPages } from '@/lib/repositories/pageRepository';
 import { publishComponents, getUnpublishedComponents, hardDeleteSoftDeletedComponents } from '@/lib/repositories/componentRepository';
 import { publishLayerStyles, getUnpublishedLayerStyles, hardDeleteSoftDeletedLayerStyles } from '@/lib/repositories/layerStyleRepository';
@@ -423,11 +424,23 @@ export async function POST(request: NextRequest) {
       // Silently handle - non-fatal
     }
 
-    // Save published timestamp to settings
+    // Save published timestamp to settings (must match DB unique constraint — see settingsRepository + TENANT_ID)
     try {
       result.published_at_setting = await savePublishedAt(publishedAt);
-    } catch {
-      // Silently handle - non-fatal
+    } catch (e) {
+      console.error('[publish] Failed to save published_at:', e);
+      try {
+        const existing = await getSettingByKey('published_at');
+        result.published_at_setting = {
+          key: 'published_at',
+          value: existing,
+        } as Setting;
+      } catch {
+        result.published_at_setting = {
+          key: 'published_at',
+          value: null,
+        } as Setting;
+      }
     }
 
     // Calculate total duration
