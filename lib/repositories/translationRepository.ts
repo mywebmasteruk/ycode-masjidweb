@@ -6,6 +6,8 @@
  */
 
 import { getSupabaseAdmin } from '@/lib/supabase-server';
+import { resolveEffectiveTenantId } from '@/lib/masjidweb/effective-tenant-id';
+import { applyTenantEq } from '@/lib/masjidweb/apply-tenant-eq';
 import type { Translation, CreateTranslationData, UpdateTranslationData } from '@/types';
 
 /**
@@ -21,13 +23,17 @@ export async function getTranslationsByLocale(
     throw new Error('Supabase not configured');
   }
 
-  const { data, error } = await client
+  const tenantId = await resolveEffectiveTenantId();
+  let query = client
     .from('translations')
     .select('*')
     .eq('locale_id', localeId)
     .eq('is_published', isPublished)
     .is('deleted_at', null)
     .order('created_at', { ascending: true });
+  query = applyTenantEq(query, tenantId);
+
+  const { data, error } = await query;
 
   if (error) {
     throw new Error(`Failed to fetch translations: ${error.message}`);
@@ -50,7 +56,8 @@ export async function getTranslationsBySource(
     throw new Error('Supabase not configured');
   }
 
-  const { data, error } = await client
+  const tenantId = await resolveEffectiveTenantId();
+  let query = client
     .from('translations')
     .select('*')
     .eq('source_type', sourceType)
@@ -58,6 +65,9 @@ export async function getTranslationsBySource(
     .eq('is_published', isPublished)
     .is('deleted_at', null)
     .order('created_at', { ascending: true });
+  query = applyTenantEq(query, tenantId);
+
+  const { data, error } = await query;
 
   if (error) {
     throw new Error(`Failed to fetch translations: ${error.message}`);
@@ -79,13 +89,16 @@ export async function getTranslationById(
     throw new Error('Supabase not configured');
   }
 
-  const { data, error } = await client
+  const tenantId = await resolveEffectiveTenantId();
+  let query = client
     .from('translations')
     .select('*')
     .eq('id', id)
     .eq('is_published', isPublished)
-    .is('deleted_at', null)
-    .single();
+    .is('deleted_at', null);
+  query = applyTenantEq(query, tenantId);
+
+  const { data, error } = await query.single();
 
   if (error) {
     if (error.code === 'PGRST116') {
@@ -113,7 +126,8 @@ export async function getTranslationByKey(
     throw new Error('Supabase not configured');
   }
 
-  const { data, error } = await client
+  const tenantId = await resolveEffectiveTenantId();
+  let query = client
     .from('translations')
     .select('*')
     .eq('locale_id', localeId)
@@ -121,8 +135,10 @@ export async function getTranslationByKey(
     .eq('source_id', sourceId)
     .eq('content_key', contentKey)
     .eq('is_published', isPublished)
-    .is('deleted_at', null)
-    .single();
+    .is('deleted_at', null);
+  query = applyTenantEq(query, tenantId);
+
+  const { data, error } = await query.single();
 
   if (error) {
     if (error.code === 'PGRST116') {
@@ -147,6 +163,8 @@ export async function createTranslation(
     throw new Error('Supabase not configured');
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+
   const { data, error } = await client
     .from('translations')
     .upsert(
@@ -160,6 +178,7 @@ export async function createTranslation(
         is_completed: translationData.is_completed ?? false,
         is_published: false,
         deleted_at: null, // Restore if previously deleted
+        ...(tenantId ? { tenant_id: tenantId } : {}),
       },
       {
         onConflict: 'locale_id,source_type,source_id,content_key,is_published',
@@ -188,7 +207,8 @@ export async function updateTranslation(
     throw new Error('Supabase not configured');
   }
 
-  const { data, error } = await client
+  const tenantId = await resolveEffectiveTenantId();
+  let query = client
     .from('translations')
     .update({
       ...updates,
@@ -196,9 +216,10 @@ export async function updateTranslation(
       updated_at: new Date().toISOString(),
     })
     .eq('id', id)
-    .eq('is_published', false)
-    .select()
-    .single();
+    .eq('is_published', false);
+  query = applyTenantEq(query, tenantId);
+
+  const { data, error } = await query.select().single();
 
   if (error) {
     throw new Error(`Failed to update translation: ${error.message}`);
@@ -217,11 +238,15 @@ export async function deleteTranslation(id: string): Promise<void> {
     throw new Error('Supabase not configured');
   }
 
-  const { error } = await client
+  const tenantId = await resolveEffectiveTenantId();
+  let query = client
     .from('translations')
     .update({ deleted_at: new Date().toISOString() })
     .eq('id', id)
     .eq('is_published', false);
+  query = applyTenantEq(query, tenantId);
+
+  const { error } = await query;
 
   if (error) {
     throw new Error(`Failed to delete translation: ${error.message}`);
@@ -260,6 +285,8 @@ export async function deleteTranslationsInBulk(
     return;
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+
   // Build the base query
   let query = client
     .from('translations')
@@ -272,6 +299,8 @@ export async function deleteTranslationsInBulk(
   if (contentKeys !== undefined) {
     query = query.in('content_key', contentKeys);
   }
+
+  query = applyTenantEq(query, tenantId);
 
   const { error } = await query;
 
@@ -298,7 +327,8 @@ export async function markTranslationsIncomplete(
     return; // Nothing to update
   }
 
-  const { error } = await client
+  const tenantId = await resolveEffectiveTenantId();
+  let query = client
     .from('translations')
     .update({
       is_completed: false,
@@ -309,6 +339,9 @@ export async function markTranslationsIncomplete(
     .in('content_key', contentKeys)
     .eq('is_published', false)
     .is('deleted_at', null);
+  query = applyTenantEq(query, tenantId);
+
+  const { error } = await query;
 
   if (error) {
     throw new Error(`Failed to mark translations as incomplete: ${error.message}`);
@@ -328,6 +361,8 @@ export async function upsertTranslations(
     throw new Error('Supabase not configured');
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+
   const translationsToUpsert = translations.map((t) => ({
     locale_id: t.locale_id,
     source_type: t.source_type,
@@ -337,6 +372,7 @@ export async function upsertTranslations(
     content_value: t.content_value,
     is_published: false,
     deleted_at: null, // Restore if previously deleted
+    ...(tenantId ? { tenant_id: tenantId } : {}),
   }));
 
   const { data, error } = await client
