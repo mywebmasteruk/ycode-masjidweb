@@ -8,8 +8,10 @@ import { parseAuthCookie, getPasswordProtection, fetchFoldersForAuth } from '@/l
 import { resolveEffectiveTenantId } from '@/lib/masjidweb/effective-tenant-id';
 import type { Metadata } from 'next';
 
-// Static by default for performance, dynamic only when pagination is requested
-export const revalidate = false; // Cache indefinitely until publish invalidates
+// Avoid ISR full-route caching on Netlify (stale HTML after publish). Data still uses
+// unstable_cache + revalidateTag('all-pages') on publish.
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 
 /**
  * Fetch homepage data from database

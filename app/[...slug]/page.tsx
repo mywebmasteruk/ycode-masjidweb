@@ -14,8 +14,10 @@ import { settingsTenantIdOrNull } from '@/lib/masjidweb/settings-tenant-id';
 import { applyTenantEq } from '@/lib/masjidweb/apply-tenant-eq';
 import type { Page, PageFolder, Translation, Redirect as RedirectType } from '@/types';
 
-// Static by default for performance, dynamic only when pagination is requested
-export const revalidate = false; // Cache indefinitely until publish invalidates
+// Avoid ISR full-route caching on Netlify (stale HTML after publish). Data still uses
+// unstable_cache + revalidateTag('all-pages') on publish.
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 export const dynamicParams = true;
 
 /**
