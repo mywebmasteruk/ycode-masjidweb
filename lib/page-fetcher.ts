@@ -134,14 +134,13 @@ export async function loadTranslationsForLocale(
     }
 
     // Fetch all translations for this locale
-    let transQuery = supabase
+    // NOTE: translations table has no tenant_id column; isolation is via locale_id (locales are tenant-scoped)
+    const { data: translations } = await supabase
       .from('translations')
       .select('*')
       .eq('locale_id', locale.id)
       .eq('is_published', isPublished)
       .is('deleted_at', null);
-    transQuery = applyTenantEq(transQuery, tenantId);
-    const { data: translations } = await transQuery;
 
     if (!translations) {
       return { locale, translations: {} };

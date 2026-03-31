@@ -11,6 +11,8 @@ import { getKnexClient } from '../knex-client';
 import { getPublishedPagesByIds } from '@/lib/repositories/pageRepository';
 import { batchPublishPageLayers } from '@/lib/repositories/pageLayersRepository';
 import { getSupabaseAdmin } from '@/lib/supabase-server';
+import { resolveEffectiveTenantId } from '@/lib/masjidweb/effective-tenant-id';
+import { applyTenantEq } from '@/lib/masjidweb/apply-tenant-eq';
 
 /**
  * Helper: Generate a unique slug from a page name
@@ -187,13 +189,17 @@ export async function publishPages(pageIds: string[]): Promise<PublishPagesResul
     throw new Error('Supabase not configured');
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+
   // Step 1: Batch fetch all draft pages in a single query
-  const { data: draftPagesData, error: pagesError } = await client
+  let draftPagesQuery = client
     .from('pages')
     .select('*')
     .in('id', pageIds)
     .eq('is_published', false)
     .is('deleted_at', null);
+  draftPagesQuery = applyTenantEq(draftPagesQuery, tenantId);
+  const { data: draftPagesData, error: pagesError } = await draftPagesQuery;
 
   if (pagesError) {
     throw new Error(`Failed to fetch draft pages: ${pagesError.message}`);
@@ -304,6 +310,7 @@ export async function publishPages(pageIds: string[]): Promise<PublishPagesResul
       settings: draftFolder.settings,
       is_published: true,
       updated_at: new Date().toISOString(),
+      ...(tenantId ? { tenant_id: tenantId } : {}),
     });
   }
 
@@ -357,6 +364,7 @@ export async function publishPages(pageIds: string[]): Promise<PublishPagesResul
         content_hash: draftPage.content_hash,
         is_published: true,
         updated_at: new Date().toISOString(),
+        ...(tenantId ? { tenant_id: tenantId } : {}),
       });
     }
   }
@@ -380,13 +388,15 @@ export async function publishPages(pageIds: string[]): Promise<PublishPagesResul
     }
 
     const slugsToCheck = [...new Set(nonDynamicPagesToUpsert.map((p) => p.slug))];
-    const { data: conflictingPublished } = await client
+    let conflictQuery = client
       .from('pages')
       .select('id, slug, page_folder_id, error_page')
       .eq('is_published', true)
       .eq('is_dynamic', false)
       .is('deleted_at', null)
       .in('slug', slugsToCheck);
+    conflictQuery = applyTenantEq(conflictQuery, tenantId);
+    const { data: conflictingPublished } = await conflictQuery;
 
     // Delete if a different page will occupy this slug/folder/error_page slot
     const idsToDelete = (conflictingPublished || [])
