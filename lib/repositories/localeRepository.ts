@@ -7,6 +7,8 @@
 
 import { getSupabaseAdmin } from '@/lib/supabase-server';
 import type { Locale, CreateLocaleData, UpdateLocaleData } from '@/types';
+import { resolveEffectiveTenantId } from '@/lib/masjidweb/effective-tenant-id';
+import { applyTenantEq } from '@/lib/masjidweb/apply-tenant-eq';
 
 /**
  * Get all locales (draft by default)
@@ -17,13 +19,16 @@ export async function getAllLocales(isPublished: boolean = false): Promise<Local
     throw new Error('Failed to initialize Supabase client');
   }
 
-  const { data, error } = await client
+  const tenantId = await resolveEffectiveTenantId();
+  let query = client
     .from('locales')
     .select('*')
     .eq('is_published', isPublished)
     .is('deleted_at', null)
     .order('is_default', { ascending: false })
     .order('label', { ascending: true });
+  query = applyTenantEq(query, tenantId);
+  const { data, error } = await query;
 
   if (error) {
     throw new Error(`Failed to fetch locales: ${error.message}`);
@@ -42,13 +47,15 @@ export async function getLocaleById(id: string, isPublished: boolean = false): P
     throw new Error('Failed to initialize Supabase client');
   }
 
-  const { data, error } = await client
+  const tenantId = await resolveEffectiveTenantId();
+  let query = client
     .from('locales')
     .select('*')
     .eq('id', id)
     .eq('is_published', isPublished)
-    .is('deleted_at', null)
-    .single();
+    .is('deleted_at', null);
+  query = applyTenantEq(query, tenantId);
+  const { data, error } = await query.single();
 
   if (error) {
     if (error.code === 'PGRST116') {
@@ -69,13 +76,15 @@ export async function getLocaleByCode(code: string, isPublished: boolean = false
     throw new Error('Failed to initialize Supabase client');
   }
 
-  const { data, error } = await client
+  const tenantId = await resolveEffectiveTenantId();
+  let query = client
     .from('locales')
     .select('*')
     .eq('code', code)
     .eq('is_published', isPublished)
-    .is('deleted_at', null)
-    .single();
+    .is('deleted_at', null);
+  query = applyTenantEq(query, tenantId);
+  const { data, error } = await query.single();
 
   if (error) {
     if (error.code === 'PGRST116') {
@@ -96,13 +105,15 @@ export async function getDefaultLocale(isPublished: boolean = false): Promise<Lo
     throw new Error('Failed to initialize Supabase client');
   }
 
-  const { data, error } = await client
+  const tenantId = await resolveEffectiveTenantId();
+  let query = client
     .from('locales')
     .select('*')
     .eq('is_default', true)
     .eq('is_published', isPublished)
-    .is('deleted_at', null)
-    .single();
+    .is('deleted_at', null);
+  query = applyTenantEq(query, tenantId);
+  const { data, error } = await query.single();
 
   if (error) {
     if (error.code === 'PGRST116') {
@@ -127,39 +138,44 @@ export async function createLocale(
     throw new Error('Failed to initialize Supabase client');
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+
   // Check if a locale with this code already exists (including soft-deleted)
-  const { data: existingLocale } = await client
+  let existingQuery = client
     .from('locales')
     .select('*')
     .eq('code', localeData.code)
-    .eq('is_published', false)
-    .maybeSingle();
+    .eq('is_published', false);
+  existingQuery = applyTenantEq(existingQuery, tenantId);
+  const { data: existingLocale } = await existingQuery.maybeSingle();
 
   // If this is set as default, unset any existing default
   if (localeData.is_default) {
-    await client
+    let unsetQuery = client
       .from('locales')
       .update({ is_default: false })
       .eq('is_default', true)
       .eq('is_published', false);
+    unsetQuery = applyTenantEq(unsetQuery, tenantId);
+    await unsetQuery;
   }
 
   let data: Locale;
 
   if (existingLocale) {
     // Update existing locale (restore if soft-deleted)
-    const { data: updatedData, error } = await client
+    let updateQuery = client
       .from('locales')
       .update({
         label: localeData.label,
         is_default: localeData.is_default || false,
-        deleted_at: null, // Restore if soft-deleted
+        deleted_at: null,
         updated_at: new Date().toISOString(),
       })
       .eq('id', existingLocale.id)
-      .eq('is_published', false)
-      .select()
-      .single();
+      .eq('is_published', false);
+    updateQuery = applyTenantEq(updateQuery, tenantId);
+    const { data: updatedData, error } = await updateQuery.select().single();
 
     if (error) {
       throw new Error(`Failed to update locale: ${error.message}`);
@@ -175,6 +191,7 @@ export async function createLocale(
         label: localeData.label,
         is_default: localeData.is_default || false,
         is_published: false,
+        ...(tenantId ? { tenant_id: tenantId } : {}),
       })
       .select()
       .single();
@@ -205,26 +222,30 @@ export async function updateLocale(
     throw new Error('Failed to initialize Supabase client');
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+
   // If this is being set as default, unset any existing default
   if (updates.is_default) {
-    await client
+    let unsetQuery = client
       .from('locales')
       .update({ is_default: false })
       .eq('is_default', true)
       .eq('is_published', false)
       .neq('id', id);
+    unsetQuery = applyTenantEq(unsetQuery, tenantId);
+    await unsetQuery;
   }
 
-  const { data, error } = await client
+  let updateQuery = client
     .from('locales')
     .update({
       ...updates,
       updated_at: new Date().toISOString(),
     })
     .eq('id', id)
-    .eq('is_published', false)
-    .select()
-    .single();
+    .eq('is_published', false);
+  updateQuery = applyTenantEq(updateQuery, tenantId);
+  const { data, error } = await updateQuery.select().single();
 
   if (error) {
     throw new Error(`Failed to update locale: ${error.message}`);
@@ -251,11 +272,14 @@ export async function deleteLocale(id: string): Promise<void> {
     throw new Error('Cannot delete the default locale');
   }
 
-  const { error } = await client
+  const tenantId = await resolveEffectiveTenantId();
+  let deleteQuery = client
     .from('locales')
     .update({ deleted_at: new Date().toISOString() })
     .eq('id', id)
     .eq('is_published', false);
+  deleteQuery = applyTenantEq(deleteQuery, tenantId);
+  const { error } = await deleteQuery;
 
   if (error) {
     throw new Error(`Failed to delete locale: ${error.message}`);
@@ -271,24 +295,28 @@ export async function setDefaultLocale(id: string): Promise<Locale> {
     throw new Error('Failed to initialize Supabase client');
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+
   // Unset current default
-  await client
+  let unsetQuery = client
     .from('locales')
     .update({ is_default: false })
     .eq('is_default', true)
     .eq('is_published', false);
+  unsetQuery = applyTenantEq(unsetQuery, tenantId);
+  await unsetQuery;
 
   // Set new default
-  const { data, error } = await client
+  let setQuery = client
     .from('locales')
     .update({
       is_default: true,
       updated_at: new Date().toISOString(),
     })
     .eq('id', id)
-    .eq('is_published', false)
-    .select()
-    .single();
+    .eq('is_published', false);
+  setQuery = applyTenantEq(setQuery, tenantId);
+  const { data, error } = await setQuery.select().single();
 
   if (error) {
     throw new Error(`Failed to set default locale: ${error.message}`);

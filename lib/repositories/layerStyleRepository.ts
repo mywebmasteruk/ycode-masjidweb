@@ -8,6 +8,8 @@
 import { getSupabaseAdmin } from '@/lib/supabase-server';
 import type { LayerStyle, Layer } from '@/types';
 import { generateLayerStyleContentHash } from '../hash-utils';
+import { resolveEffectiveTenantId } from '@/lib/masjidweb/effective-tenant-id';
+import { applyTenantEq } from '@/lib/masjidweb/apply-tenant-eq';
 
 /**
  * Input data for creating a new layer style
@@ -48,12 +50,15 @@ export async function getAllStyles(isPublished: boolean = false): Promise<LayerS
     throw new Error('Failed to initialize Supabase client');
   }
 
-  const { data, error } = await client
+  const tenantId = await resolveEffectiveTenantId();
+  let query = client
     .from('layer_styles')
     .select('*')
     .eq('is_published', isPublished)
     .is('deleted_at', null)
     .order('created_at', { ascending: false });
+  query = applyTenantEq(query, tenantId);
+  const { data, error } = await query;
 
   if (error) {
     throw new Error(`Failed to fetch layer styles: ${error.message}`);
@@ -72,13 +77,15 @@ export async function getStyleById(id: string, isPublished: boolean = false): Pr
     throw new Error('Failed to initialize Supabase client');
   }
 
-  const { data, error } = await client
+  const tenantId = await resolveEffectiveTenantId();
+  let query = client
     .from('layer_styles')
     .select('*')
     .eq('id', id)
     .eq('is_published', isPublished)
-    .is('deleted_at', null)
-    .single();
+    .is('deleted_at', null);
+  query = applyTenantEq(query, tenantId);
+  const { data, error } = await query.single();
 
   if (error) {
     if (error.code === 'PGRST116') {
@@ -99,12 +106,14 @@ export async function getStyleByIdIncludingDeleted(id: string, isPublished: bool
     throw new Error('Failed to initialize Supabase client');
   }
 
-  const { data, error } = await client
+  const tenantId = await resolveEffectiveTenantId();
+  let query = client
     .from('layer_styles')
     .select('*')
     .eq('id', id)
-    .eq('is_published', isPublished)
-    .single();
+    .eq('is_published', isPublished);
+  query = applyTenantEq(query, tenantId);
+  const { data, error } = await query.single();
 
   if (error) {
     if (error.code === 'PGRST116') {
@@ -127,6 +136,8 @@ export async function createStyle(
     throw new Error('Failed to initialize Supabase client');
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+
   // Calculate content hash
   const contentHash = generateLayerStyleContentHash({
     name: styleData.name,
@@ -143,6 +154,7 @@ export async function createStyle(
       group: styleData.group,
       content_hash: contentHash,
       is_published: false,
+      ...(tenantId ? { tenant_id: tenantId } : {}),
     })
     .select()
     .single();
@@ -166,6 +178,8 @@ export async function updateStyle(
     throw new Error('Failed to initialize Supabase client');
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+
   // Get current style to merge with updates
   const current = await getStyleById(id);
   if (!current) {
@@ -182,7 +196,7 @@ export async function updateStyle(
   // Recalculate content hash
   const contentHash = generateLayerStyleContentHash(finalData);
 
-  const { data, error } = await client
+  let updateQuery = client
     .from('layer_styles')
     .update({
       ...updates,
@@ -190,9 +204,9 @@ export async function updateStyle(
       updated_at: new Date().toISOString(),
     })
     .eq('id', id)
-    .eq('is_published', false) // Update draft version only
-    .select()
-    .single();
+    .eq('is_published', false);
+  updateQuery = applyTenantEq(updateQuery, tenantId);
+  const { data, error } = await updateQuery.select().single();
 
   if (error) {
     throw new Error(`Failed to update layer style: ${error.message}`);
@@ -211,12 +225,14 @@ export async function getPublishedStyleById(id: string): Promise<LayerStyle | nu
     throw new Error('Failed to initialize Supabase client');
   }
 
-  const { data, error } = await client
+  const tenantId = await resolveEffectiveTenantId();
+  let query = client
     .from('layer_styles')
     .select('*')
     .eq('id', id)
-    .eq('is_published', true)
-    .single();
+    .eq('is_published', true);
+  query = applyTenantEq(query, tenantId);
+  const { data, error } = await query.single();
 
   if (error) {
     if (error.code === 'PGRST116') {
@@ -239,6 +255,8 @@ export async function publishLayerStyle(draftStyleId: string): Promise<LayerStyl
     throw new Error('Failed to initialize Supabase client');
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+
   // Get the draft style
   const draftStyle = await getStyleById(draftStyleId);
   if (!draftStyle) {
@@ -249,14 +267,15 @@ export async function publishLayerStyle(draftStyleId: string): Promise<LayerStyl
   const { data, error } = await client
     .from('layer_styles')
     .upsert({
-      id: draftStyle.id, // Same ID for draft and published versions
+      id: draftStyle.id,
       name: draftStyle.name,
       classes: draftStyle.classes,
       design: draftStyle.design,
       group: draftStyle.group,
-      content_hash: draftStyle.content_hash, // Copy hash from draft
+      content_hash: draftStyle.content_hash,
       is_published: true,
       updated_at: new Date().toISOString(),
+      ...(tenantId ? { tenant_id: tenantId } : {}),
     }, {
       onConflict: 'id,is_published',
     })
@@ -284,12 +303,16 @@ export async function publishLayerStyles(styleIds: string[]): Promise<{ count: n
     throw new Error('Failed to initialize Supabase client');
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+
   // Batch fetch all draft styles
-  const { data: draftStyles, error: fetchError } = await client
+  let fetchQuery = client
     .from('layer_styles')
     .select('*')
     .in('id', styleIds)
     .eq('is_published', false);
+  fetchQuery = applyTenantEq(fetchQuery, tenantId);
+  const { data: draftStyles, error: fetchError } = await fetchQuery;
 
   if (fetchError) {
     throw new Error(`Failed to fetch draft layer styles: ${fetchError.message}`);
@@ -309,6 +332,7 @@ export async function publishLayerStyles(styleIds: string[]): Promise<{ count: n
     content_hash: draft.content_hash,
     is_published: true,
     updated_at: new Date().toISOString(),
+    ...(tenantId ? { tenant_id: tenantId } : {}),
   }));
 
   // Batch upsert all styles
@@ -337,12 +361,16 @@ export async function getUnpublishedLayerStyles(): Promise<LayerStyle[]> {
     throw new Error('Failed to initialize Supabase client');
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+
   // Get all draft layer styles
-  const { data: draftStyles, error } = await client
+  let draftQuery = client
     .from('layer_styles')
     .select('*')
     .eq('is_published', false)
     .order('created_at', { ascending: false });
+  draftQuery = applyTenantEq(draftQuery, tenantId);
+  const { data: draftStyles, error } = await draftQuery;
 
   if (error) {
     throw new Error(`Failed to fetch draft layer styles: ${error.message}`);
@@ -356,11 +384,13 @@ export async function getUnpublishedLayerStyles(): Promise<LayerStyle[]> {
 
   // Batch fetch all published styles for the draft IDs
   const draftIds = draftStyles.map(s => s.id);
-  const { data: publishedStyles, error: publishedError } = await client
+  let publishedQuery = client
     .from('layer_styles')
     .select('*')
     .in('id', draftIds)
     .eq('is_published', true);
+  publishedQuery = applyTenantEq(publishedQuery, tenantId);
+  const { data: publishedStyles, error: publishedError } = await publishedQuery;
 
   if (publishedError) {
     throw new Error(`Failed to fetch published layer styles: ${publishedError.message}`);
@@ -399,11 +429,15 @@ export async function hardDeleteSoftDeletedLayerStyles(): Promise<{ count: numbe
     throw new Error('Failed to initialize Supabase client');
   }
 
-  const { data: deletedDrafts, error } = await client
+  const tenantId = await resolveEffectiveTenantId();
+
+  let selectQuery = client
     .from('layer_styles')
     .select('id')
     .eq('is_published', false)
     .not('deleted_at', 'is', null);
+  selectQuery = applyTenantEq(selectQuery, tenantId);
+  const { data: deletedDrafts, error } = await selectQuery;
 
   if (error) {
     throw new Error(`Failed to fetch deleted draft layer styles: ${error.message}`);
@@ -415,22 +449,26 @@ export async function hardDeleteSoftDeletedLayerStyles(): Promise<{ count: numbe
 
   const ids = deletedDrafts.map(s => s.id);
 
-  const { error: pubError } = await client
+  let pubDeleteQuery = client
     .from('layer_styles')
     .delete()
     .in('id', ids)
     .eq('is_published', true);
+  pubDeleteQuery = applyTenantEq(pubDeleteQuery, tenantId);
+  const { error: pubError } = await pubDeleteQuery;
 
   if (pubError) {
     console.error('Failed to delete published layer styles:', pubError);
   }
 
-  const { error: draftError } = await client
+  let draftDeleteQuery = client
     .from('layer_styles')
     .delete()
     .in('id', ids)
     .eq('is_published', false)
     .not('deleted_at', 'is', null);
+  draftDeleteQuery = applyTenantEq(draftDeleteQuery, tenantId);
+  const { error: draftError } = await draftDeleteQuery;
 
   if (draftError) {
     throw new Error(`Failed to delete draft layer styles: ${draftError.message}`);
@@ -495,14 +533,17 @@ export async function findEntitiesUsingLayerStyle(styleId: string): Promise<Laye
     throw new Error('Failed to initialize Supabase client');
   }
 
+  const tenantId = await resolveEffectiveTenantId();
   const affectedEntities: LayerStyleAffectedEntity[] = [];
 
   // Find affected page_layers
-  const { data: pageLayersRecords, error: pageError } = await client
+  let pageLayersQuery = client
     .from('page_layers')
     .select('id, page_id, layers')
     .eq('is_published', false)
     .is('deleted_at', null);
+  pageLayersQuery = applyTenantEq(pageLayersQuery, tenantId);
+  const { data: pageLayersRecords, error: pageError } = await pageLayersQuery;
 
   if (pageError) {
     throw new Error(`Failed to fetch page layers: ${pageError.message}`);
@@ -514,12 +555,14 @@ export async function findEntitiesUsingLayerStyle(styleId: string): Promise<Laye
     .map(record => record.page_id);
 
   if (affectedPageLayerIds.length > 0) {
-    const { data: pages, error: pagesError } = await client
+    let pagesQuery = client
       .from('pages')
       .select('id, name')
       .in('id', affectedPageLayerIds)
       .eq('is_published', false)
       .is('deleted_at', null);
+    pagesQuery = applyTenantEq(pagesQuery, tenantId);
+    const { data: pages, error: pagesError } = await pagesQuery;
 
     if (pagesError) {
       throw new Error(`Failed to fetch pages: ${pagesError.message}`);
@@ -543,11 +586,13 @@ export async function findEntitiesUsingLayerStyle(styleId: string): Promise<Laye
   }
 
   // Find affected components
-  const { data: componentRecords, error: compError } = await client
+  let componentsQuery = client
     .from('components')
     .select('id, name, layers')
     .eq('is_published', false)
     .is('deleted_at', null);
+  componentsQuery = applyTenantEq(componentsQuery, tenantId);
+  const { data: componentRecords, error: compError } = await componentsQuery;
 
   if (compError) {
     throw new Error(`Failed to fetch components: ${compError.message}`);
@@ -579,14 +624,17 @@ export async function softDeleteStyle(id: string): Promise<LayerStyleSoftDeleteR
     throw new Error('Failed to initialize Supabase client');
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+
   // Get the layer style before deleting
-  const { data: layerStyle, error: fetchError } = await client
+  let fetchQuery = client
     .from('layer_styles')
     .select('*')
     .eq('id', id)
     .eq('is_published', false)
-    .is('deleted_at', null)
-    .single();
+    .is('deleted_at', null);
+  fetchQuery = applyTenantEq(fetchQuery, tenantId);
+  const { data: layerStyle, error: fetchError } = await fetchQuery.single();
 
   if (fetchError || !layerStyle) {
     throw new Error('Layer style not found');
@@ -598,19 +646,21 @@ export async function softDeleteStyle(id: string): Promise<LayerStyleSoftDeleteR
   // Detach style from all affected page_layers
   for (const entity of affectedEntities) {
     if (entity.type === 'page') {
-      const { error: updateError } = await client
+      let pageUpdateQuery = client
         .from('page_layers')
         .update({
           layers: entity.newLayers,
           updated_at: new Date().toISOString(),
         })
         .eq('id', entity.id);
+      pageUpdateQuery = applyTenantEq(pageUpdateQuery, tenantId);
+      const { error: updateError } = await pageUpdateQuery;
 
       if (updateError) {
         console.error(`Failed to update page_layers ${entity.id}:`, updateError);
       }
     } else if (entity.type === 'component') {
-      const { error: updateError } = await client
+      let compUpdateQuery = client
         .from('components')
         .update({
           layers: entity.newLayers,
@@ -618,6 +668,8 @@ export async function softDeleteStyle(id: string): Promise<LayerStyleSoftDeleteR
         })
         .eq('id', entity.id)
         .eq('is_published', false);
+      compUpdateQuery = applyTenantEq(compUpdateQuery, tenantId);
+      const { error: updateError } = await compUpdateQuery;
 
       if (updateError) {
         console.error(`Failed to update component ${entity.id}:`, updateError);
@@ -627,10 +679,12 @@ export async function softDeleteStyle(id: string): Promise<LayerStyleSoftDeleteR
 
   // Soft delete the style (both draft and published versions)
   const deletedAt = new Date().toISOString();
-  const { error: deleteError } = await client
+  let deleteQuery = client
     .from('layer_styles')
     .update({ deleted_at: deletedAt })
     .eq('id', id);
+  deleteQuery = applyTenantEq(deleteQuery, tenantId);
+  const { error: deleteError } = await deleteQuery;
 
   if (deleteError) {
     throw new Error(`Failed to soft delete layer style: ${deleteError.message}`);
@@ -651,13 +705,14 @@ export async function restoreLayerStyle(id: string): Promise<LayerStyle> {
     throw new Error('Failed to initialize Supabase client');
   }
 
-  const { data, error } = await client
+  const tenantId = await resolveEffectiveTenantId();
+  let query = client
     .from('layer_styles')
     .update({ deleted_at: null })
     .eq('id', id)
-    .eq('is_published', false)
-    .select()
-    .single();
+    .eq('is_published', false);
+  query = applyTenantEq(query, tenantId);
+  const { data, error } = await query.select().single();
 
   if (error) {
     throw new Error(`Failed to restore layer style: ${error.message}`);
@@ -676,10 +731,13 @@ export async function deleteStyle(id: string): Promise<void> {
     throw new Error('Failed to initialize Supabase client');
   }
 
-  const { error } = await client
+  const tenantId = await resolveEffectiveTenantId();
+  let query = client
     .from('layer_styles')
     .delete()
     .eq('id', id);
+  query = applyTenantEq(query, tenantId);
+  const { error } = await query;
 
   if (error) {
     throw new Error(`Failed to delete layer style: ${error.message}`);
