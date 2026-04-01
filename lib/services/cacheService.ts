@@ -1,13 +1,14 @@
 import { revalidateTag, revalidatePath } from 'next/cache';
+import { resolveEffectiveTenantId } from '@/lib/masjidweb/effective-tenant-id';
+import {
+  tenantAllPagesTag,
+  tenantRouteTag,
+} from '@/lib/masjidweb/tenant-cache-tags';
 
 /**
  * Cache Invalidation Service
  *
- * Architecture (Netlify):
- *   1. Next.js Data Cache (Netlify Blobs) — cleared by revalidateTag
- *   2. Next.js Full Route Cache (Netlify Durable) — cleared by revalidatePath
- *   3. Netlify Edge CDN — purged via Netlify purge API + @netlify/functions purgeCache.
- *      revalidatePath alone does NOT propagate to the Edge CDN on Netlify.
+ * Netlify: revalidateTag clears Next data cache; optional REST purge clears Edge when configured.
  */
 
 function netlifyPurgeCredentials(): { token: string | undefined; siteId: string | undefined } {
@@ -21,14 +22,17 @@ function netlifyPurgeCredentials(): { token: string | undefined; siteId: string 
   return { token, siteId };
 }
 
-export async function purgeNetlifyEdgeCache(): Promise<{ method: string; ok: boolean; error?: string }> {
+export async function purgeNetlifyEdgeCache(): Promise<{
+  method: string;
+  ok: boolean;
+  error?: string;
+}> {
   const diagnostics: string[] = [];
   const { token, siteId } = netlifyPurgeCredentials();
   diagnostics.push(
     `env: purge_token=${token ? 'set' : 'missing'}, site_id=${siteId || 'missing'}`,
   );
 
-  // purgeCache() without options throws unless NETLIFY_PURGE_API_TOKEN exists — pass token explicitly.
   if (token && siteId) {
     try {
       const { purgeCache } = await import('@netlify/functions');
@@ -66,15 +70,14 @@ export async function purgeNetlifyEdgeCache(): Promise<{ method: string; ok: boo
   return { method: 'none', ok: false, error };
 }
 
-/**
- * Invalidate cache for a specific page by route path
- *
- * @param routePath - Route path
- */
 export async function invalidatePage(routePath: string): Promise<boolean> {
   try {
-    revalidateTag(`route-/${routePath}`, { expire: 0 });
-    revalidatePath(`/${routePath}`, 'page');
+    const effectiveTid = await resolveEffectiveTenantId();
+    const normalized = routePath.replace(/^\/+/, '');
+    revalidateTag(tenantRouteTag(effectiveTid, normalized || '/'), {
+      expire: 0,
+    });
+    revalidatePath(normalized ? `/${normalized}` : '/', 'page');
     return true;
   } catch (error) {
     console.error('❌ [Cache] Invalidation error:', error);
@@ -82,30 +85,20 @@ export async function invalidatePage(routePath: string): Promise<boolean> {
   }
 }
 
-/**
- * Invalidate cache for multiple pages
- *
- * @param routePaths - Array of route paths
- */
 export async function invalidatePages(routePaths: string[]): Promise<boolean> {
   const results = await Promise.all(
-    routePaths.map((routePath) => invalidatePage(routePath))
+    routePaths.map((routePath) => invalidatePage(routePath)),
   );
-
-  return results.every((result) => result);
+  return results.every(Boolean);
 }
 
-/**
- * Clear all cache after publish.
- * @param publisherTenantId - optional; included in return payload for debugging (subdomain tenant).
- * Returns diagnostic info about the Netlify edge purge for debugging.
- */
 export async function clearAllCache(
   publisherTenantId?: string | null,
 ): Promise<Record<string, unknown>> {
+  const tid = publisherTenantId?.trim() || null;
   try {
-    revalidateTag('all-pages', { expire: 0 });
-    revalidateTag('route-/', { expire: 0 });
+    revalidateTag(tenantAllPagesTag(tid), { expire: 0 });
+    revalidateTag(tenantRouteTag(tid, '/'), { expire: 0 });
     revalidatePath('/', 'layout');
     revalidatePath('/', 'page');
   } catch (error) {
@@ -116,6 +109,6 @@ export async function clearAllCache(
   const purge = await purgeNetlifyEdgeCache();
   return {
     ...purge,
-    publisherTenantId: publisherTenantId ?? null,
+    publisherTenantId: tid,
   };
 }

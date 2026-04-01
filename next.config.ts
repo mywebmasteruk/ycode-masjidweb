@@ -57,14 +57,11 @@ const nextConfig: NextConfig = {
         ],
       },
       {
-        // Apply to public pages ONLY (exclude /ycode/*, /_next/*, /a/*)
         source: '/:path((?!ycode|_next|a/).*)*',
         headers: [
           {
-            key: 'Cache-Control',
-            // Cache until re-published: CDN caches for up to 1 year
-            // On publish, revalidatePath purges CDN; revalidateTag purges data cache
-            value: 'public, s-maxage=31536000, stale-while-revalidate=31536000',
+            key: 'Netlify-CDN-Cache-Control',
+            value: 'no-store',
           },
         ],
       },

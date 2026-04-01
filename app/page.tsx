@@ -6,10 +6,14 @@ import PasswordForm from '@/components/PasswordForm';
 import { generatePageMetadata, fetchGlobalPageSettings } from '@/lib/generate-page-metadata';
 import { parseAuthCookie, getPasswordProtection, fetchFoldersForAuth } from '@/lib/page-auth';
 import { resolveEffectiveTenantId } from '@/lib/masjidweb/effective-tenant-id';
+import {
+  tenantAllPagesTag,
+  tenantRouteTag,
+} from '@/lib/masjidweb/tenant-cache-tags';
 import type { Metadata } from 'next';
 
-// Avoid ISR full-route caching on Netlify (stale HTML after publish). Data still uses
-// unstable_cache + revalidateTag('all-pages') on publish.
+// Avoid ISR full-route caching on Netlify (stale HTML after publish). Data uses
+// unstable_cache + tenant-scoped revalidateTag on publish.
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
@@ -18,17 +22,23 @@ export const revalidate = 0;
  * Cached with tag-based revalidation (no time-based stale cache)
  */
 async function fetchPublishedHomepage() {
-  const tid = (await resolveEffectiveTenantId()) ?? '_';
+  const effectiveTid = await resolveEffectiveTenantId();
+  const keySuffix = effectiveTid ?? '_';
   try {
     return await unstable_cache(
       async () => fetchHomepage(true),
-      [`data-for-route-/`, tid],
+      ['data-for-route-/', keySuffix],
       {
-        tags: ['all-pages', 'route-/'],
+        tags: [
+          tenantAllPagesTag(effectiveTid),
+          tenantRouteTag(effectiveTid, '/'),
+        ],
         revalidate: false,
       }
     )();
   } catch {
+    // Fallback to uncached fetch when data exceeds cache size limit (2MB).
+    // If runtime credentials are unavailable (e.g. build-time), return null.
     try {
       return await fetchHomepage(true);
     } catch {
@@ -38,12 +48,13 @@ async function fetchPublishedHomepage() {
 }
 
 async function fetchCachedGlobalSettings() {
-  const tid = (await resolveEffectiveTenantId()) ?? '_';
+  const effectiveTid = await resolveEffectiveTenantId();
+  const keySuffix = effectiveTid ?? '_';
   try {
     return await unstable_cache(
       async () => fetchGlobalPageSettings(),
-      ['data-for-global-settings', tid],
-      { tags: ['all-pages'], revalidate: false }
+      ['data-for-global-settings', keySuffix],
+      { tags: [tenantAllPagesTag(effectiveTid)], revalidate: false }
     )();
   } catch {
     return {
@@ -62,12 +73,13 @@ async function fetchCachedGlobalSettings() {
 }
 
 async function fetchCachedFoldersForAuth() {
-  const tid = (await resolveEffectiveTenantId()) ?? '_';
+  const effectiveTid = await resolveEffectiveTenantId();
+  const keySuffix = effectiveTid ?? '_';
   try {
     return await unstable_cache(
       async () => fetchFoldersForAuth(true),
-      ['data-for-auth-folders', tid],
-      { tags: ['all-pages'], revalidate: false }
+      ['data-for-auth-folders', keySuffix],
+      { tags: [tenantAllPagesTag(effectiveTid)], revalidate: false }
     )();
   } catch {
     return [];
@@ -75,12 +87,13 @@ async function fetchCachedFoldersForAuth() {
 }
 
 async function fetchCachedErrorPage(errorCode: 401) {
-  const tid = (await resolveEffectiveTenantId()) ?? '_';
+  const effectiveTid = await resolveEffectiveTenantId();
+  const keySuffix = effectiveTid ?? '_';
   try {
     return await unstable_cache(
       async () => fetchErrorPage(errorCode, true),
-      [`data-for-error-page-${errorCode}`, tid],
-      { tags: ['all-pages'], revalidate: false }
+      [`data-for-error-page-${errorCode}`, keySuffix],
+      { tags: [tenantAllPagesTag(effectiveTid)], revalidate: false }
     )();
   } catch {
     return null;
@@ -218,14 +231,21 @@ export async function generateMetadata(): Promise<Metadata> {
     }
   }
 
-  const tid = (await resolveEffectiveTenantId()) ?? '_';
+  const effectiveTid = await resolveEffectiveTenantId();
+  const keySuffix = effectiveTid ?? '_';
   return unstable_cache(
     async () => generatePageMetadata(data.page, {
       fallbackTitle: 'Home',
       pagePath: '/',
       globalSeoSettings: globalSettings,
     }),
-    ['data-for-route-/-meta', tid],
-    { tags: ['all-pages', 'route-/'], revalidate: false }
+    ['data-for-route-/-meta', keySuffix],
+    {
+      tags: [
+        tenantAllPagesTag(effectiveTid),
+        tenantRouteTag(effectiveTid, '/'),
+      ],
+      revalidate: false,
+    }
   )();
 }
