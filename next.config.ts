@@ -60,8 +60,12 @@ const nextConfig: NextConfig = {
         source: '/:path((?!ycode|_next|a/).*)*',
         headers: [
           {
-            key: 'Netlify-CDN-Cache-Control',
-            value: 'no-store',
+            key: 'Cache-Control',
+            // Short CDN TTL so visitors see publishes within minutes even if edge purge
+            // fails (missing NETLIFY_PURGE_API_TOKEN). On publish, clearAllCache() still
+            // revalidates Next data cache + calls purgeCache(Netlify-Cache-Tag: all-pages).
+            value:
+              'public, max-age=0, s-maxage=120, stale-while-revalidate=86400',
           },
         ],
       },
