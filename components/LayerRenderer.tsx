@@ -621,6 +621,20 @@ const LayerItem: React.FC<{
     htmlTag = 'a';
   }
 
+  // Divs with link settings render as <a> directly instead of being
+  // wrapped in <a class="contents"><div>…</div></a>.
+  // Only match actual div layers (layer.name === 'div'), not other layers
+  // whose tag was forced to 'div' by earlier overrides (e.g. headings with lists).
+  const isDivWithLink = !isButtonWithLink
+    && layer.name === 'div'
+    && htmlTag === 'div'
+    && layer.id !== 'body'
+    && !(isEditing && textEditable)
+    && isValidLinkSettings(layer.variables?.link);
+  if (isDivWithLink) {
+    htmlTag = 'a';
+  }
+
   // Code Embed iframe ref and effect - must be at component level
   const htmlEmbedIframeRef = React.useRef<HTMLIFrameElement>(null);
   const filterLayerRef = React.useRef<HTMLDivElement>(null);
@@ -3002,10 +3016,11 @@ const LayerItem: React.FC<{
   let content = renderContent();
 
   // Wrap with link if layer has link settings
-  // Skip for buttons — they render as <a> directly (see isButtonWithLink)
+  // Skip for buttons/divs — they render as <a> directly (see isButtonWithLink, isDivWithLink)
   // Skip for <a> layers — they already render as <a> and nesting <a> inside <a> is invalid HTML
   const linkSettings = layer.variables?.link;
   const shouldWrapWithLink = !isButtonWithLink
+    && !isDivWithLink
     && htmlTag !== 'a'
     && !subtreeHasInteractiveDescendants
     && isValidLinkSettings(linkSettings);
