@@ -17,7 +17,7 @@ function netlifyPurgeCredentials(): {
   token: string | undefined;
   siteId: string | undefined;
   siteSlug: string | undefined;
-} {
+  } {
   const token =
     process.env.NETLIFY_PURGE_API_TOKEN?.trim() ||
     process.env.NETLIFY_TOKEN?.trim() ||
@@ -48,7 +48,20 @@ export async function purgeNetlifyEdgeCache(): Promise<{
     return { method: 'none', ok: false, error: diagnostics.join(' | ') };
   }
 
-  const { purgeCache } = await import('@netlify/functions');
+  let purgeCache: (opts: {
+    token: string;
+    siteID?: string;
+    siteSlug?: string;
+    tags?: string[];
+  }) => Promise<void>;
+  try {
+    purgeCache = (await import('@netlify/functions')).purgeCache;
+  } catch (importErr) {
+    const msg = `import @netlify/functions failed: ${importErr instanceof Error ? importErr.message : String(importErr)}`;
+    diagnostics.push(msg);
+    console.warn(`⚠️ [Cache] ${msg}`);
+    return { method: 'none', ok: false, error: diagnostics.join(' | ') };
+  }
 
   const attempts: Array<{ label: string; run: () => Promise<void> }> = [];
 
@@ -146,9 +159,7 @@ export async function invalidatePage(routePath: string): Promise<boolean> {
   try {
     const effectiveTid = await resolveEffectiveTenantId();
     const normalized = routePath.replace(/^\/+/, '');
-    revalidateTag(tenantRouteTag(effectiveTid, normalized || '/'), {
-      expire: 0,
-    });
+    revalidateTag(tenantRouteTag(effectiveTid, normalized || '/'), 'max');
     revalidatePath(normalized ? `/${normalized}` : '/', 'page');
     return true;
   } catch (error) {
@@ -168,19 +179,24 @@ export async function clearAllCache(
   publisherTenantId?: string | null,
 ): Promise<Record<string, unknown>> {
   const tid = publisherTenantId?.trim() || null;
+  let nextCacheNote: string | undefined;
   try {
-    revalidateTag(tenantAllPagesTag(tid), { expire: 0 });
-    revalidateTag(tenantRouteTag(tid, '/'), { expire: 0 });
+    // Next.js 16 expects a profile string (e.g. "max"); invalid profile or missing
+    // incrementalCache on some hosts must not fail the whole publish pipeline.
+    revalidateTag(tenantAllPagesTag(tid), 'max');
+    revalidateTag(tenantRouteTag(tid, '/'), 'max');
     revalidatePath('/', 'layout');
     revalidatePath('/', 'page');
   } catch (error) {
-    console.error('❌ [Cache] Clear all error:', error);
-    throw new Error('Failed to clear all cache');
+    nextCacheNote =
+      error instanceof Error ? error.message : String(error);
+    console.warn('⚠️ [Cache] Next revalidate skipped (non-fatal):', nextCacheNote);
   }
 
   const purge = await purgeNetlifyEdgeCache();
   return {
     ...purge,
     publisherTenantId: tid,
+    ...(nextCacheNote ? { nextJsRevalidateNote: nextCacheNote } : {}),
   };
 }

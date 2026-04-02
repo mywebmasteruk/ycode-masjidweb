@@ -21,6 +21,8 @@ import type { Setting, PublishStats, PublishTableStats } from '@/types';
 // Disable caching for this route
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
+/** Full publish (pages + CMS + CSS + cache) exceeds default Netlify/Next limits without this. */
+export const maxDuration = 300;
 
 interface PublishRequest {
   publishAll?: boolean; // If true and no specific items provided, publish all unpublished items

@@ -123,13 +123,21 @@ export async function proxy(request: NextRequest) {
       request.headers.set('x-tenant-slug', tenant.slug);
     }
   } else if (isProvisionPublish) {
-    if (provisionTenantSlug) {
-      const tenant = await lookupTenant(provisionTenantSlug, true);
-      if (tenant) {
-        request.headers.set('x-tenant-id', tenant.id);
-        request.headers.set('x-tenant-slug', tenant.slug);
-      }
+    if (!provisionTenantSlug) {
+      return NextResponse.json(
+        { error: 'Provisioning publish requires X-Tenant-Slug' },
+        { status: 400 },
+      );
     }
+    const tenant = await lookupTenant(provisionTenantSlug, true);
+    if (!tenant) {
+      return NextResponse.json(
+        { error: `Tenant not found for slug: ${provisionTenantSlug}` },
+        { status: 404 },
+      );
+    }
+    request.headers.set('x-tenant-id', tenant.id);
+    request.headers.set('x-tenant-slug', tenant.slug);
   } else if (pathname.startsWith('/ycode')) {
     const sbConfig = getSupabaseEnvConfig();
     if (sbConfig) {
@@ -196,18 +204,12 @@ export async function proxy(request: NextRequest) {
 
     const rewriteResponse = NextResponse.rewrite(rewriteUrl, { request });
     rewriteResponse.headers.set('x-pathname', pathname);
-    if (!pathname.startsWith('/a/')) {
-      rewriteResponse.headers.set('Netlify-Cache-Tag', 'all-pages');
-    }
     return rewriteResponse;
   }
 
   const response = NextResponse.next({ request });
 
   response.headers.set('x-pathname', pathname);
-  if (isPublicPage(pathname) && !pathname.startsWith('/a/')) {
-    response.headers.set('Netlify-Cache-Tag', 'all-pages');
-  }
 
   return response;
 }
