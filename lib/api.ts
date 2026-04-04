@@ -7,14 +7,22 @@
 import type { Page, PageLayers, Layer, Asset, AssetCategory, PageFolder, ApiResponse, Collection, CollectionField, CollectionItemWithValues, Component, LayerStyle, Setting, UpdateCollectionData, CreateCollectionFieldData, UpdateCollectionFieldData, Locale, Translation, CreateLocaleData, UpdateLocaleData, CreateTranslationData, UpdateTranslationData, AssetFolder, Font } from '../types';
 import type { StatusAction } from '@/lib/collection-field-utils';
 import type { CollectionUsageResult, CollectionFieldUsageResult } from '@/lib/collection-usage-utils';
+import { createBrowserClient } from '@/lib/supabase-browser';
 
 // All API routes are now relative (Next.js API routes)
 const API_BASE = '';
 
-// Get Supabase auth token
+// Bearer token for /ycode/api/* (proxy validates JWT; cookies are also sent same-origin)
 async function getAuthToken(): Promise<string | null> {
-  // TODO: Get from Supabase client when implemented
-  return null;
+  if (typeof window === 'undefined') return null;
+  try {
+    const supabase = await createBrowserClient();
+    if (!supabase) return null;
+    const { data: { session } } = await supabase.auth.getSession();
+    return session?.access_token ?? null;
+  } catch {
+    return null;
+  }
 }
 
 // Generic API request helper
@@ -25,6 +33,7 @@ async function apiRequest<T>(
   const token = await getAuthToken();
 
   const response = await fetch(`${API_BASE}${endpoint}`, {
+    credentials: 'same-origin',
     headers: {
       'Content-Type': 'application/json',
       ...(token && { Authorization: `Bearer ${token}` }),

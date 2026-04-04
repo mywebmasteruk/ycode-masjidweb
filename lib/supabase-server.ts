@@ -39,6 +39,8 @@ export const getSupabaseConfig = getSupabaseCredentials;
 let cachedClient: SupabaseClient | null = null;
 let cachedCredentials: string | null = null;
 
+let loggedMissingAdminCreds = false;
+
 /**
  * Get Supabase client with service role key (admin access).
  * Tenant scoping is done in queries (e.g. `resolveEffectiveTenantId`), not on the client.
@@ -47,7 +49,13 @@ export async function getSupabaseAdmin(): Promise<SupabaseClient | null> {
   const creds = await getSupabaseCredentials();
 
   if (!creds) {
-    console.error('[getSupabaseAdmin] No credentials returned!');
+    const duringNextBuild = process.env.NEXT_PHASE === 'phase-production-build';
+    if (!duringNextBuild && !loggedMissingAdminCreds) {
+      loggedMissingAdminCreds = true;
+      console.warn(
+        '[getSupabaseAdmin] No stored Supabase credentials yet (complete setup in /ycode or configure storage).',
+      );
+    }
     return null;
   }
 
