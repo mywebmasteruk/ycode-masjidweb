@@ -1,22 +1,19 @@
 /**
  * Resolve tenant id/slug from tenant_registry via Supabase REST (service role).
- * Used by proxy.ts; cached briefly to limit latency on hot paths.
+ * Used by proxy.ts.
+ *
+ * No in-memory slug→id cache: after reclaim + reprovision the same slug gets a new
+ * `tenant_registry.id`; caching the old UUID for 60s made the builder load an empty
+ * tenant while rows lived under the new id.
  */
 
 import { getSupabaseEnvConfig } from '@/lib/tenant/middleware-utils';
 
-const tenantCache = new Map<string, { id: string; slug: string; ts: number }>();
-const CACHE_TTL_MS = 60_000;
-
 export async function lookupTenant(
   slug: string,
-  allowProvisioning = false,
+  /** @deprecated Reserved for future stricter filters; provisioning tenants are always included so /ycode works during setup. */
+  _allowProvisioning = false,
 ): Promise<{ id: string; slug: string } | null> {
-  const cached = tenantCache.get(slug);
-  if (cached && Date.now() - cached.ts < CACHE_TTL_MS) {
-    return { id: cached.id, slug: cached.slug };
-  }
-
   const envConfig = getSupabaseEnvConfig();
   const key =
     process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -26,7 +23,7 @@ export async function lookupTenant(
   try {
     const qs = new URLSearchParams({
       slug: `eq.${slug}`,
-      status: allowProvisioning ? 'in.(active,provisioning)' : 'eq.active',
+      status: 'in.(active,provisioning)',
       select: 'id,slug',
       limit: '1',
     });
@@ -36,7 +33,6 @@ export async function lookupTenant(
     if (!res.ok) return null;
     const rows = (await res.json()) as { id: string; slug: string }[];
     if (!rows.length) return null;
-    tenantCache.set(slug, { ...rows[0], ts: Date.now() });
     return rows[0];
   } catch {
     return null;
