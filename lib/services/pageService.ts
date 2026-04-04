@@ -300,6 +300,11 @@ export async function publishPages(pageIds: string[]): Promise<PublishPagesResul
     
     foldersBeingPublished.add(draftFolder.id);
 
+    const folderTid =
+      tenantId ??
+      (draftFolder as { tenant_id?: string | null }).tenant_id ??
+      null;
+
     foldersToUpsert.push({
       id: draftFolder.id,
       name: draftFolder.name,
@@ -310,7 +315,7 @@ export async function publishPages(pageIds: string[]): Promise<PublishPagesResul
       settings: draftFolder.settings,
       is_published: true,
       updated_at: new Date().toISOString(),
-      ...(tenantId ? { tenant_id: tenantId } : {}),
+      ...(folderTid ? { tenant_id: folderTid } : {}),
     });
   }
 
@@ -350,6 +355,11 @@ export async function publishPages(pageIds: string[]): Promise<PublishPagesResul
     const folderChanged = existingPublished?.page_folder_id !== publishedParentId;
     
     if (!existingPublished || contentChanged || folderChanged) {
+      const pageTid =
+        tenantId ??
+        (draftPage as { tenant_id?: string | null }).tenant_id ??
+        null;
+
       pagesToUpsert.push({
         id: draftPage.id,
         name: draftPage.name,
@@ -364,7 +374,7 @@ export async function publishPages(pageIds: string[]): Promise<PublishPagesResul
         content_hash: draftPage.content_hash,
         is_published: true,
         updated_at: new Date().toISOString(),
-        ...(tenantId ? { tenant_id: tenantId } : {}),
+        ...(pageTid ? { tenant_id: pageTid } : {}),
       });
     }
   }
