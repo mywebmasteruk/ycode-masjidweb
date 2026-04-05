@@ -23,6 +23,74 @@ import {
   FieldSet,
 } from '@/components/ui/field';
 
+type InviteVerificationResult =
+  | { ok: true; email: string | null }
+  | { ok: false; message: string };
+
+async function verifyInviteFromUrl(
+  supabase: NonNullable<Awaited<ReturnType<typeof createBrowserClient>>>,
+): Promise<InviteVerificationResult> {
+  const url = new URL(window.location.href);
+  const query = url.searchParams;
+  const hashParams = new URLSearchParams(window.location.hash.substring(1));
+
+  const typeFromQuery = query.get('type');
+  const typeFromHash = hashParams.get('type');
+  const flowType = typeFromHash || typeFromQuery;
+
+  // Flow A: legacy hash fragment with access + refresh tokens
+  const accessToken = hashParams.get('access_token');
+  const refreshToken = hashParams.get('refresh_token');
+  if (flowType === 'invite' && accessToken && refreshToken) {
+    const { data, error } = await supabase.auth.setSession({
+      access_token: accessToken,
+      refresh_token: refreshToken,
+    });
+    if (error) {
+      return {
+        ok: false,
+        message: 'Invalid or expired invitation link. Please request a new invite.',
+      };
+    }
+    return { ok: true, email: data.user?.email ?? null };
+  }
+
+  // Flow B: token_hash + type=invite (Supabase OTP verify flow)
+  const tokenHash = query.get('token_hash');
+  if (flowType === 'invite' && tokenHash) {
+    const { data, error } = await supabase.auth.verifyOtp({
+      type: 'invite',
+      token_hash: tokenHash,
+    });
+    if (error) {
+      return {
+        ok: false,
+        message: 'Invalid or expired invitation link. Please request a new invite.',
+      };
+    }
+    return { ok: true, email: data.user?.email ?? null };
+  }
+
+  // Flow C: code query param exchange (PKCE/code flow)
+  const code = query.get('code');
+  if (code) {
+    const { data, error } = await supabase.auth.exchangeCodeForSession(code);
+    if (error) {
+      return {
+        ok: false,
+        message: 'Invalid or expired invitation link. Please request a new invite.',
+      };
+    }
+    return { ok: true, email: data.user?.email ?? null };
+  }
+
+  return {
+    ok: false,
+    message:
+      'Invalid invitation link. Please check your email for the correct link or request a new invite.',
+  };
+}
+
 export default function AcceptInvitePage() {
   const router = useRouter();
   const [password, setPassword] = useState('');
@@ -53,31 +121,9 @@ export default function AcceptInvitePage() {
           return;
         }
 
-        // Get hash parameters from URL (Supabase sends token in hash)
-        const hashParams = new URLSearchParams(window.location.hash.substring(1));
-        const accessToken = hashParams.get('access_token');
-        const refreshToken = hashParams.get('refresh_token');
-        const type = hashParams.get('type');
-
-        // Check if this is an invite flow
-        if (type === 'invite' && accessToken && refreshToken) {
-          // Set the session with the tokens from the URL
-          const { data, error: sessionError } = await supabase.auth.setSession({
-            access_token: accessToken,
-            refresh_token: refreshToken,
-          });
-
-          if (sessionError) {
-            console.error('Session error:', sessionError);
-            setError('Invalid or expired invitation link. Please request a new invite.');
-            setVerifying(false);
-            return;
-          }
-
-          if (data.user) {
-            setUserEmail(data.user.email || null);
-          }
-
+        const verify = await verifyInviteFromUrl(supabase);
+        if (verify.ok) {
+          setUserEmail(verify.email);
           setVerifying(false);
           return;
         }
@@ -92,7 +138,7 @@ export default function AcceptInvitePage() {
         }
 
         // No valid token found
-        setError('Invalid invitation link. Please check your email for the correct link or request a new invite.');
+        setError(verify.message);
         setVerifying(false);
       } catch (err) {
         console.error('Error verifying invite:', err);
