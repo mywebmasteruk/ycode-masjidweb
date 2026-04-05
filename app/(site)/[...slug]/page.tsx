@@ -1,6 +1,7 @@
 import { notFound, redirect, permanentRedirect } from 'next/navigation';
 import { unstable_cache } from 'next/cache';
 import type { Metadata } from 'next';
+import { cache } from 'react';
 import { getSupabaseAdmin } from '@/lib/supabase-server';
 import { buildSlugPath } from '@/lib/page-utils';
 import { generatePageMetadata, fetchGlobalPageSettings } from '@/lib/generate-page-metadata';
@@ -22,6 +23,25 @@ import type { Page, PageFolder, Translation, Redirect as RedirectType } from '@/
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 export const dynamicParams = true;
+
+const getTenantCacheContext = cache(async () => {
+  const effectiveTid = await resolveEffectiveTenantId();
+  let publishedAtVersion = '_';
+  try {
+    const publishedAt = await getSettingByKey('published_at');
+    if (typeof publishedAt === 'string' && publishedAt.trim()) {
+      publishedAtVersion = publishedAt.trim();
+    } else if (publishedAt != null) {
+      publishedAtVersion = JSON.stringify(publishedAt);
+    }
+  } catch {
+    // Non-fatal: keep a stable fallback suffix.
+  }
+  return {
+    effectiveTid,
+    keySuffix: `${effectiveTid ?? '_'}:${publishedAtVersion}`,
+  };
+});
 
 /**
  * Generate static params for known published pages
@@ -169,8 +189,7 @@ export async function generateStaticParams() {
  * Cached per slug and page for revalidation
  */
 async function fetchPublishedPageWithLayers(slugPath: string) {
-  const effectiveTid = await resolveEffectiveTenantId();
-  const keySuffix = effectiveTid ?? '_';
+  const { effectiveTid, keySuffix } = await getTenantCacheContext();
   try {
     return await unstable_cache(
       async () => fetchPageByPath(slugPath, true),
@@ -195,8 +214,7 @@ async function fetchPublishedPageWithLayers(slugPath: string) {
 }
 
 async function fetchCachedRedirects(): Promise<RedirectType[] | null> {
-  const effectiveTid = await resolveEffectiveTenantId();
-  const keySuffix = effectiveTid ?? '_';
+  const { effectiveTid, keySuffix } = await getTenantCacheContext();
   try {
     return await unstable_cache(
       async () => getSettingByKey('redirects') as Promise<RedirectType[] | null>,
@@ -209,8 +227,7 @@ async function fetchCachedRedirects(): Promise<RedirectType[] | null> {
 }
 
 async function fetchCachedGlobalSettings() {
-  const effectiveTid = await resolveEffectiveTenantId();
-  const keySuffix = effectiveTid ?? '_';
+  const { effectiveTid, keySuffix } = await getTenantCacheContext();
   try {
     return await unstable_cache(
       async () => fetchGlobalPageSettings(),
@@ -234,8 +251,7 @@ async function fetchCachedGlobalSettings() {
 }
 
 async function fetchCachedFoldersForAuth() {
-  const effectiveTid = await resolveEffectiveTenantId();
-  const keySuffix = effectiveTid ?? '_';
+  const { effectiveTid, keySuffix } = await getTenantCacheContext();
   try {
     return await unstable_cache(
       async () => fetchFoldersForAuth(true),
@@ -248,8 +264,7 @@ async function fetchCachedFoldersForAuth() {
 }
 
 async function fetchCachedErrorPage(errorCode: 401 | 404) {
-  const effectiveTid = await resolveEffectiveTenantId();
-  const keySuffix = effectiveTid ?? '_';
+  const { effectiveTid, keySuffix } = await getTenantCacheContext();
   try {
     return await unstable_cache(
       async () => fetchErrorPage(errorCode, true),
@@ -428,8 +443,7 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
     }
   }
 
-  const effectiveTid = await resolveEffectiveTenantId();
-  const keySuffix = effectiveTid ?? '_';
+  const { effectiveTid, keySuffix } = await getTenantCacheContext();
   return unstable_cache(
     async () => generatePageMetadata(data.page, {
       fallbackTitle: slugPath.charAt(0).toUpperCase() + slugPath.slice(1),

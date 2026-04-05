@@ -1,10 +1,12 @@
 import { unstable_cache } from 'next/cache';
 import Link from 'next/link';
+import { cache } from 'react';
 import { fetchHomepage, fetchErrorPage } from '@/lib/page-fetcher';
 import PageRenderer from '@/components/PageRenderer';
 import PasswordForm from '@/components/PasswordForm';
 import { generatePageMetadata, fetchGlobalPageSettings } from '@/lib/generate-page-metadata';
 import { parseAuthCookie, getPasswordProtection, fetchFoldersForAuth } from '@/lib/page-auth';
+import { getSettingByKey } from '@/lib/repositories/settingsRepository';
 import { resolveEffectiveTenantId } from '@/lib/masjidweb/effective-tenant-id';
 import {
   tenantAllPagesTag,
@@ -17,13 +19,31 @@ import type { Metadata } from 'next';
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
+const getTenantCacheContext = cache(async () => {
+  const effectiveTid = await resolveEffectiveTenantId();
+  let publishedAtVersion = '_';
+  try {
+    const publishedAt = await getSettingByKey('published_at');
+    if (typeof publishedAt === 'string' && publishedAt.trim()) {
+      publishedAtVersion = publishedAt.trim();
+    } else if (publishedAt != null) {
+      publishedAtVersion = JSON.stringify(publishedAt);
+    }
+  } catch {
+    // Non-fatal: keep a stable fallback suffix.
+  }
+  return {
+    effectiveTid,
+    keySuffix: `${effectiveTid ?? '_'}:${publishedAtVersion}`,
+  };
+});
+
 /**
  * Fetch homepage data from database
  * Cached with tag-based revalidation (no time-based stale cache)
  */
 async function fetchPublishedHomepage() {
-  const effectiveTid = await resolveEffectiveTenantId();
-  const keySuffix = effectiveTid ?? '_';
+  const { effectiveTid, keySuffix } = await getTenantCacheContext();
   try {
     return await unstable_cache(
       async () => fetchHomepage(true),
@@ -48,8 +68,7 @@ async function fetchPublishedHomepage() {
 }
 
 async function fetchCachedGlobalSettings() {
-  const effectiveTid = await resolveEffectiveTenantId();
-  const keySuffix = effectiveTid ?? '_';
+  const { effectiveTid, keySuffix } = await getTenantCacheContext();
   try {
     return await unstable_cache(
       async () => fetchGlobalPageSettings(),
@@ -73,8 +92,7 @@ async function fetchCachedGlobalSettings() {
 }
 
 async function fetchCachedFoldersForAuth() {
-  const effectiveTid = await resolveEffectiveTenantId();
-  const keySuffix = effectiveTid ?? '_';
+  const { effectiveTid, keySuffix } = await getTenantCacheContext();
   try {
     return await unstable_cache(
       async () => fetchFoldersForAuth(true),
@@ -87,8 +105,7 @@ async function fetchCachedFoldersForAuth() {
 }
 
 async function fetchCachedErrorPage(errorCode: 401) {
-  const effectiveTid = await resolveEffectiveTenantId();
-  const keySuffix = effectiveTid ?? '_';
+  const { effectiveTid, keySuffix } = await getTenantCacheContext();
   try {
     return await unstable_cache(
       async () => fetchErrorPage(errorCode, true),
@@ -231,8 +248,7 @@ export async function generateMetadata(): Promise<Metadata> {
     }
   }
 
-  const effectiveTid = await resolveEffectiveTenantId();
-  const keySuffix = effectiveTid ?? '_';
+  const { effectiveTid, keySuffix } = await getTenantCacheContext();
   return unstable_cache(
     async () => generatePageMetadata(data.page, {
       fallbackTitle: 'Home',
