@@ -61,13 +61,11 @@ const nextConfig: NextConfig = {
         headers: [
           {
             key: 'Cache-Control',
-            // s-maxage=0 + must-revalidate: edge must check origin each time — no multi-minute
-            // stale HTML window (s-maxage=120 felt like “publish then wait ~2 min”). Browsers
-            // already get max-age=0. stale-while-revalidate stays 0 (long SWR = stale sites).
-            // Tenant-scoped Netlify-Cache-Tag + purge still cuts origin load after publish when
-            // NETLIFY_PURGE_API_TOKEN is set (proxy.ts, cacheService.ts).
-            value:
-              'public, max-age=0, s-maxage=0, stale-while-revalidate=0, must-revalidate',
+            // `private` keeps shared caches (Netlify Edge, other CDNs) from storing HTML, so
+            // a publish + revalidateTag is visible on the next load — no edge TTL / “stale” window.
+            // Tenant-scoped Netlify-Cache-Tag + purge still helps internal invalidation when
+            // NETLIFY_PURGE_API_TOKEN is set. `/a/*` assets stay `public, immutable` (rule above).
+            value: 'private, max-age=0, must-revalidate',
           },
         ],
       },

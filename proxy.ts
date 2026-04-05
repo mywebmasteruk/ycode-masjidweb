@@ -218,15 +218,17 @@ export async function proxy(request: NextRequest) {
 }
 
 /**
- * Netlify edge caches HTML per URL; tag by tenant so purgeCache({ tags }) on publish
- * only drops that hostname's pages, not every tenant on this deploy.
+ * Public HTML: shared caches must not store (`private`) so publish is visible immediately;
+ * per-tenant Netlify-Cache-Tag so purgeCache({ tags }) only drops that tenant. Skip `/a/*`
+ * (immutable hashed assets — next.config sets long public cache).
  */
 function attachTenantNetlifyCacheTag(
   response: NextResponse,
   request: NextRequest,
   pathname: string,
 ): void {
-  if (!isPublicPage(pathname)) return;
+  if (!isPublicPage(pathname) || pathname.startsWith('/a/')) return;
+  response.headers.set('Cache-Control', 'private, max-age=0, must-revalidate');
   const tid = request.headers.get('x-tenant-id')?.trim();
   if (!tid) return;
   response.headers.set('Netlify-Cache-Tag', tenantAllPagesTag(tid));

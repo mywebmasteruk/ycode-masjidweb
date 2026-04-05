@@ -52,7 +52,7 @@ export async function purgeNetlifyEdgeCache(
 
   if (!token) {
     const msg =
-      'no purge token (set NETLIFY_PURGE_API_TOKEN to drop edge entries by tag after publish; HTML uses s-maxage=0 so the CDN revalidates every request)';
+      'no purge token (set NETLIFY_PURGE_API_TOKEN to purge by tag after publish; public HTML uses Cache-Control: private so shared edge caches do not retain stale pages)';
     diagnostics.push(msg);
     console.warn(`⚠️ [Cache] ${msg}`);
     return { method: 'none', ok: false, error: diagnostics.join(' | ') };
