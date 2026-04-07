@@ -2035,8 +2035,8 @@ const CMS = React.memo(function CMS() {
 
       <div className="p-4 flex items-center justify-between border-b">
 
-        <div className="relative w-full max-w-72">
-          <InputGroup>
+        <div className="flex items-center gap-1.5">
+          <InputGroup className="w-full max-w-72">
             <InputGroupInput
               placeholder="Search..."
               value={searchQuery}
@@ -2047,11 +2047,25 @@ const CMS = React.memo(function CMS() {
               <Icon name="search" className="size-3" />
             </InputGroupAddon>
           </InputGroup>
-          {isLoading && !showSkeleton && (
-            <div className="absolute -right-6 top-1/2 -translate-y-1/2">
-              <Spinner className="size-4 opacity-50" />
-            </div>
-          )}
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={isLoading || showSkeleton}
+            aria-label="Refresh items"
+            onClick={() => {
+              if (!selectedCollectionId) return;
+              if (searchQuery.trim()) {
+                searchItems(selectedCollectionId, searchQuery, currentPage, pageSize, currentSortBy, currentSortOrder);
+              } else {
+                loadItems(selectedCollectionId, currentPage, pageSize, currentSortBy, currentSortOrder);
+              }
+            }}
+          >
+            <Icon
+              name="refresh"
+              className={cn('size-3', isLoading && !showSkeleton && 'animate-spin')}
+            />
+          </Button>
         </div>
 
         <div className="flex gap-2">

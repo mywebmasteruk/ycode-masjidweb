@@ -1,5 +1,6 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse, after } from 'next/server';
 import { processWebhookNotification } from '@/lib/apps/airtable/sync-service';
+import { getTenantIdFromHeaders } from '@/lib/supabase-server';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -16,12 +17,20 @@ export async function POST(request: NextRequest) {
     const webhookId = body?.webhook?.id;
 
     if (!baseId || !webhookId) {
+      console.warn('[Airtable Webhook] Missing base.id or webhook.id:', JSON.stringify(body));
       return NextResponse.json({ error: 'Invalid payload' }, { status: 400 });
     }
 
-    // Process async — don't block the webhook response
-    processWebhookNotification(baseId, webhookId).catch((err) => {
-      console.error('[Airtable Webhook] Sync error:', err);
+    const tenantId = await getTenantIdFromHeaders();
+
+    // after() keeps the serverless function alive after the response is sent,
+    // preventing Vercel from killing processWebhookNotification mid-execution.
+    after(async () => {
+      try {
+        await processWebhookNotification(baseId, webhookId, tenantId);
+      } catch (err) {
+        console.error('[Airtable Webhook] Sync error:', err);
+      }
     });
 
     return NextResponse.json({ success: true });

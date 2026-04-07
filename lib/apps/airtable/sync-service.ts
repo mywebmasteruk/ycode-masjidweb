@@ -11,7 +11,7 @@
 
 import { randomUUID } from 'crypto';
 
-import { getSupabaseAdmin } from '@/lib/supabase-server';
+import { getSupabaseAdmin, runWithTenantId } from '@/lib/supabase-server';
 import { getAppSettingValue, setAppSetting } from '@/lib/repositories/appSettingsRepository';
 import { slugify } from '@/lib/collection-utils';
 import { isAssetFieldType, isMultipleAssetField, getAssetCategoryForField } from '@/lib/collection-field-utils';
@@ -39,6 +39,10 @@ const SLUG_FIELD_KEY = 'slug';
 const BULK_CHUNK_SIZE = 500;
 const ATTACHMENT_CONCURRENCY = 5;
 const INCREMENTAL_SYNC_THRESHOLD = 100;
+/** Debounce delay so rapid-fire Airtable notifications settle before processing */
+const WEBHOOK_DEBOUNCE_MS = 2000;
+/** Auto-release stale locks after this duration (process crash safety net) */
+const SYNC_LOCK_TIMEOUT_MS = 120_000;
 
 // =============================================================================
 // Connection Helpers
@@ -157,6 +161,51 @@ export async function refreshActiveWebhooks(
   }
 
   return { refreshed, failed };
+}
+
+// =============================================================================
+// Webhook Sync Lock
+// =============================================================================
+
+interface SyncLock {
+  locked_at: string | null;
+}
+
+/**
+ * Best-effort distributed lock via Supabase REST API.
+ * Uses getAppSettingValue/setAppSetting to avoid Knex connection pool
+ * exhaustion on serverless platforms with limited pool sizes.
+ *
+ * Not strictly atomic (TOCTOU window), but combined with the dedup check
+ * in executeBatchOperations, prevents duplicate record creation.
+ */
+async function tryClaimSyncLock(webhookId: string): Promise<'acquired' | 'busy' | 'error'> {
+  try {
+    const lockKey = `sync_lock_${webhookId}`;
+    const existing = await getAppSettingValue<SyncLock>(APP_ID, lockKey);
+
+    if (existing?.locked_at) {
+      const lockedAt = new Date(existing.locked_at).getTime();
+      const isStale = Date.now() - lockedAt > SYNC_LOCK_TIMEOUT_MS;
+      if (!isStale) return 'busy';
+    }
+
+    await setAppSetting(APP_ID, lockKey, { locked_at: new Date().toISOString() });
+    return 'acquired';
+  } catch (err) {
+    console.error('[Airtable Sync] Lock acquisition failed, proceeding without lock:', err);
+    return 'error';
+  }
+}
+
+/** Release the sync lock. Best-effort — stale timeout handles cleanup on crash. */
+async function releaseSyncLock(webhookId: string): Promise<void> {
+  try {
+    const lockKey = `sync_lock_${webhookId}`;
+    await setAppSetting(APP_ID, lockKey, { locked_at: null });
+  } catch {
+    // Best-effort — stale timeout handles cleanup
+  }
 }
 
 // =============================================================================
@@ -292,63 +341,91 @@ async function incrementalSync(
  * Extracts per-record changes and runs incremental sync when practical,
  * falling back to full sync for large changesets.
  *
- * Concurrency guard: claims `syncStatus: 'syncing'` before fetching
- * payloads and advances the cursor before processing, so concurrent
- * serverless invocations skip or see an empty payload.
+ * Concurrency: uses a database-level mutex (app_settings row) so only one
+ * serverless invocation processes a given webhook at a time. A 2-second
+ * debounce inside the lock lets rapid-fire Airtable notifications settle,
+ * matching the pattern from the legacy Cache::lock + sleep(2).
  */
 export async function processWebhookNotification(
   baseId: string,
-  webhookId: string
+  webhookId: string,
+  tenantId?: string | null
 ): Promise<SyncResult[]> {
-  const token = await requireAirtableToken();
+  const tid = tenantId ?? null;
 
-  const connections = await getConnections();
-  const affectedConnections = connections.filter(
-    (c) => c.baseId === baseId && c.webhookId === webhookId
-  );
+  const doSync = async (): Promise<SyncResult[]> => {
+    // Lock must be inside doSync so it runs within the tenant context
+    // (runWithTenantId) — otherwise getSupabaseAdmin() has no tenant scope.
+    const lockStatus = await tryClaimSyncLock(webhookId);
 
-  if (affectedConnections.length === 0) return [];
-
-  const results: SyncResult[] = [];
-  for (const conn of affectedConnections) {
-    const freshConn = await getConnectionById(conn.id);
-    if (!freshConn || freshConn.syncStatus === 'syncing') continue;
-
-    await updateConnection(conn.id, { syncStatus: 'syncing', syncError: null });
+    if (lockStatus === 'busy') return [];
+    const hasLock = lockStatus === 'acquired';
 
     try {
-      const cursor = freshConn.webhookCursor || undefined;
-      const payloadResponse = await getWebhookPayloads(token, baseId, webhookId, cursor);
-
-      if (payloadResponse.cursor) {
-        await updateConnection(conn.id, { webhookCursor: payloadResponse.cursor });
+      if (hasLock) {
+        // Debounce: let rapid-fire notifications settle before hitting the API
+        await new Promise((resolve) => setTimeout(resolve, WEBHOOK_DEBOUNCE_MS));
       }
 
-      if (!payloadResponse.payloads?.length) {
-        await updateConnection(conn.id, { syncStatus: 'idle' });
-        continue;
+      const token = await requireAirtableToken();
+
+      const connections = await getConnections();
+      const affectedConnections = connections.filter(
+        (c) => c.baseId === baseId && c.webhookId === webhookId
+      );
+
+      if (affectedConnections.length === 0) return [];
+
+      const results: SyncResult[] = [];
+      for (const conn of affectedConnections) {
+        const freshConn = await getConnectionById(conn.id);
+        if (!freshConn || freshConn.syncStatus === 'syncing') continue;
+
+        await updateConnection(conn.id, { syncStatus: 'syncing', syncError: null });
+
+        try {
+          const cursor = freshConn.webhookCursor || undefined;
+          const payloadResponse = await getWebhookPayloads(token, baseId, webhookId, cursor);
+
+          if (payloadResponse.cursor) {
+            await updateConnection(conn.id, { webhookCursor: payloadResponse.cursor });
+          }
+
+          if (!payloadResponse.payloads?.length) {
+            await updateConnection(conn.id, { syncStatus: 'idle' });
+            continue;
+          }
+
+          const changes = extractTableChanges(payloadResponse.payloads, conn.tableId);
+          const totalChanges = changes.createdRecordIds.length
+            + changes.changedRecordIds.length
+            + changes.destroyedRecordIds.length;
+
+          if (totalChanges > 0) {
+            const result = totalChanges > INCREMENTAL_SYNC_THRESHOLD
+              ? await fullSync(freshConn)
+              : await incrementalSync(freshConn, changes);
+            results.push(result);
+          } else {
+            await updateConnection(conn.id, { syncStatus: 'idle' });
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Unknown sync error';
+          await updateConnection(conn.id, { syncStatus: 'error', syncError: message });
+        }
       }
 
-      const changes = extractTableChanges(payloadResponse.payloads, conn.tableId);
-      const totalChanges = changes.createdRecordIds.length
-        + changes.changedRecordIds.length
-        + changes.destroyedRecordIds.length;
-
-      if (totalChanges > 0) {
-        const result = totalChanges > INCREMENTAL_SYNC_THRESHOLD
-          ? await fullSync(freshConn)
-          : await incrementalSync(freshConn, changes);
-        results.push(result);
-      } else {
-        await updateConnection(conn.id, { syncStatus: 'idle' });
+      return results;
+    } finally {
+      if (hasLock) {
+        await releaseSyncLock(webhookId);
       }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown sync error';
-      await updateConnection(conn.id, { syncStatus: 'error', syncError: message });
     }
-  }
+  };
 
-  return results;
+  // Wrap in explicit tenant context so all nested calls (including lock
+  // acquisition) resolve the correct tenant via AsyncLocalStorage.
+  return tid ? runWithTenantId(tid, doSync) : doSync();
 }
 
 // =============================================================================
@@ -662,6 +739,31 @@ function hasChanges(
   return false;
 }
 
+/**
+ * Re-check which Airtable record IDs already exist in the CMS.
+ * Guards against concurrent webhook invocations that race past
+ * the syncStatus check and both try to create the same records.
+ */
+async function getExistingAirtableRecordIds(
+  recordIdFieldId: string,
+  airtableRecordIds: string[]
+): Promise<Set<string>> {
+  if (airtableRecordIds.length === 0) return new Set();
+
+  const client = await getSupabaseAdmin();
+  if (!client) return new Set();
+
+  const { data } = await client
+    .from('collection_item_values')
+    .select('value')
+    .eq('field_id', recordIdFieldId)
+    .eq('is_published', false)
+    .is('deleted_at', null)
+    .in('value', airtableRecordIds);
+
+  return new Set((data || []).map((row) => row.value).filter(Boolean));
+}
+
 // =============================================================================
 // Shared Sync State & Operations
 // =============================================================================
@@ -794,59 +896,70 @@ async function executeBatchOperations(
 
   if (toCreate.length > 0) {
     try {
-      const newItemIds = toCreate.map(() => randomUUID());
-      const newItems = newItemIds.map((id) => ({
-        id,
-        collection_id: collectionId,
-        manual_order: 0,
-        is_published: false,
-        is_publishable: true,
-      }));
+      // Re-check DB to filter out records a concurrent invocation already created
+      const alreadyCreated = await getExistingAirtableRecordIds(
+        ctx.recordIdFieldId,
+        toCreate.map((r) => r.id)
+      );
+      const dedupedToCreate = alreadyCreated.size > 0
+        ? toCreate.filter((r) => !alreadyCreated.has(r.id))
+        : toCreate;
 
-      let nextAutoId = 1;
-      if (ctx.autoFields.idFieldId) {
-        for (const item of existingItems) {
-          const val = existingValues[item.id]?.[ctx.autoFields.idFieldId];
-          if (val) {
-            const num = parseInt(String(val), 10);
-            if (!isNaN(num) && num >= nextAutoId) nextAutoId = num + 1;
+      if (dedupedToCreate.length > 0) {
+        const newItemIds = dedupedToCreate.map(() => randomUUID());
+        const newItems = newItemIds.map((id) => ({
+          id,
+          collection_id: collectionId,
+          manual_order: 0,
+          is_published: false,
+          is_publishable: true,
+        }));
+
+        let nextAutoId = 1;
+        if (ctx.autoFields.idFieldId) {
+          for (const item of existingItems) {
+            const val = existingValues[item.id]?.[ctx.autoFields.idFieldId];
+            if (val) {
+              const num = parseInt(String(val), 10);
+              if (!isNaN(num) && num >= nextAutoId) nextAutoId = num + 1;
+            }
           }
         }
-      }
 
-      const buildValues = async () => {
-        const now = new Date().toISOString();
-        const valuesToInsert: Array<{ item_id: string; field_id: string; value: string | null }> = [];
-        for (let i = 0; i < toCreate.length; i++) {
-          const vals = await buildRecordValues(toCreate[i], ctx);
+        const buildValues = async () => {
+          const now = new Date().toISOString();
+          const valuesToInsert: Array<{ item_id: string; field_id: string; value: string | null }> = [];
+          for (let i = 0; i < dedupedToCreate.length; i++) {
+            const vals = await buildRecordValues(dedupedToCreate[i], ctx);
 
-          if (ctx.autoFields.idFieldId) {
-            vals[ctx.autoFields.idFieldId] = String(nextAutoId++);
-          }
-          if (ctx.autoFields.createdAtFieldId) {
-            vals[ctx.autoFields.createdAtFieldId] = now;
-          }
-          if (ctx.autoFields.updatedAtFieldId) {
-            vals[ctx.autoFields.updatedAtFieldId] = now;
-          }
+            if (ctx.autoFields.idFieldId) {
+              vals[ctx.autoFields.idFieldId] = String(nextAutoId++);
+            }
+            if (ctx.autoFields.createdAtFieldId) {
+              vals[ctx.autoFields.createdAtFieldId] = now;
+            }
+            if (ctx.autoFields.updatedAtFieldId) {
+              vals[ctx.autoFields.updatedAtFieldId] = now;
+            }
 
-          for (const [fieldId, value] of Object.entries(vals)) {
-            valuesToInsert.push({ item_id: newItemIds[i], field_id: fieldId, value });
+            for (const [fieldId, value] of Object.entries(vals)) {
+              valuesToInsert.push({ item_id: newItemIds[i], field_id: fieldId, value });
+            }
           }
+          return valuesToInsert;
+        };
+
+        const [, valuesToInsert] = await Promise.all([
+          createItemsBulk(newItems),
+          buildValues(),
+        ]);
+
+        for (let i = 0; i < valuesToInsert.length; i += BULK_CHUNK_SIZE) {
+          await insertValuesBulk(valuesToInsert.slice(i, i + BULK_CHUNK_SIZE));
         }
-        return valuesToInsert;
-      };
 
-      const [, valuesToInsert] = await Promise.all([
-        createItemsBulk(newItems),
-        buildValues(),
-      ]);
-
-      for (let i = 0; i < valuesToInsert.length; i += BULK_CHUNK_SIZE) {
-        await insertValuesBulk(valuesToInsert.slice(i, i + BULK_CHUNK_SIZE));
+        result.created = dedupedToCreate.length;
       }
-
-      result.created = toCreate.length;
     } catch (error) {
       result.errors.push(`Create failed: ${error instanceof Error ? error.message : 'Unknown'}`);
     }
