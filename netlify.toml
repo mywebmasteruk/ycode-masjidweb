@@ -2,5 +2,15 @@
   command = "npm run build"
   publish = ".next"
 
+# Next.js 16 requires Node >= 20.9.0; Netlify’s default image may still use 18.x,
+# which fails immediately with "Node.js version >=20.9.0 is required".
+[build.environment]
+  NODE_VERSION = "20"
+  # Skip husky in CI (no .git hooks needed on Netlify; avoids noisy warnings).
+  HUSKY = "0"
+  # Runtime (Functions): SITE_ID is injected automatically. For instant CDN purge after
+  # Publish, add NETLIFY_PURGE_API_TOKEN in Netlify UI (Site settings → Environment variables).
+  # Optional; HTML is Cache-Control: private so edge should not retain cross-request HTML anyway.
+
 [[plugins]]
   package = "@netlify/plugin-nextjs"

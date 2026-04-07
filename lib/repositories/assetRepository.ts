@@ -4,6 +4,8 @@ import { STORAGE_BUCKET, STORAGE_FOLDERS } from '@/lib/asset-constants';
 import { cleanupOrphanedStorageFiles } from '@/lib/storage-utils';
 import { generateAssetContentHash } from '../hash-utils';
 import type { Asset } from '../../types';
+import { resolveEffectiveTenantId } from '@/lib/masjidweb/effective-tenant-id';
+import { applyTenantEq } from '@/lib/masjidweb/apply-tenant-eq';
 
 export interface CreateAssetData {
   filename: string;
@@ -44,6 +46,8 @@ export async function getAssetsPaginated(options: GetAssetsOptions = {}): Promis
   if (!client) {
     throw new Error('Supabase not configured');
   }
+
+  const tenantId = await resolveEffectiveTenantId();
 
   const {
     folderId,
@@ -93,6 +97,8 @@ export async function getAssetsPaginated(options: GetAssetsOptions = {}): Promis
     query = query.ilike('filename', `%${search.trim()}%`);
   }
 
+  query = applyTenantEq(query, tenantId);
+
   // Apply pagination and ordering
   query = query
     .order('created_at', { ascending: false })
@@ -127,6 +133,8 @@ export async function getAllAssets(folderId?: string | null): Promise<Asset[]> {
     throw new Error('Supabase not configured');
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+
   // Supabase has a default limit of 1000 rows, so we need to paginate for large datasets
   const PAGE_SIZE = 1000;
   const allAssets: Asset[] = [];
@@ -150,6 +158,8 @@ export async function getAllAssets(folderId?: string | null): Promise<Asset[]> {
         query = query.eq('asset_folder_id', folderId);
       }
     }
+
+    query = applyTenantEq(query, tenantId);
 
     const { data, error } = await query;
 
@@ -181,6 +191,8 @@ export async function getAssetById(id: string, isPublished: boolean = false): Pr
     throw new Error('Supabase not configured');
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+
   let query = client
     .from('assets')
     .select('*')
@@ -191,6 +203,8 @@ export async function getAssetById(id: string, isPublished: boolean = false): Pr
   if (!isPublished) {
     query = query.is('deleted_at', null);
   }
+
+  query = applyTenantEq(query, tenantId);
 
   const { data, error } = await query.single();
 
@@ -245,6 +259,8 @@ export async function getAssetsByIds(ids: string[], isPublished: boolean = false
     return {};
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+
   let query = client
     .from('assets')
     .select('*')
@@ -255,6 +271,8 @@ export async function getAssetsByIds(ids: string[], isPublished: boolean = false
   if (!isPublished) {
     query = query.is('deleted_at', null);
   }
+
+  query = applyTenantEq(query, tenantId);
 
   const { data, error } = await query;
 
@@ -284,13 +302,17 @@ export async function findAssetsByFilenames(filenames: string[]): Promise<Record
     throw new Error('Supabase not configured');
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+
   const unique = [...new Set(filenames)];
-  const { data, error } = await client
+  let query = client
     .from('assets')
     .select('id, filename, public_url')
     .in('filename', unique)
     .eq('is_published', false)
     .is('deleted_at', null);
+  query = applyTenantEq(query, tenantId);
+  const { data, error } = await query;
 
   if (error || !data?.length) {
     return {};
@@ -315,6 +337,8 @@ export async function createAsset(assetData: CreateAssetData): Promise<Asset> {
     throw new Error('Supabase not configured');
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+
   const now = new Date().toISOString();
   const content_hash = generateAssetContentHash({
     filename: assetData.filename,
@@ -336,6 +360,7 @@ export async function createAsset(assetData: CreateAssetData): Promise<Asset> {
       content_hash,
       is_published: false,
       updated_at: now,
+      ...(tenantId ? { tenant_id: tenantId } : {}),
     })
     .select()
     .single();
@@ -363,8 +388,10 @@ export async function updateAsset(id: string, assetData: UpdateAssetData): Promi
     throw new Error('Supabase not configured');
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+
   // Update the asset fields first, then recompute hash from the full record
-  const { data, error } = await client
+  let updateQuery = client
     .from('assets')
     .update({
       ...assetData,
@@ -372,7 +399,9 @@ export async function updateAsset(id: string, assetData: UpdateAssetData): Promi
     })
     .eq('id', id)
     .eq('is_published', false)
-    .is('deleted_at', null)
+    .is('deleted_at', null);
+  updateQuery = applyTenantEq(updateQuery, tenantId);
+  const { data, error } = await updateQuery
     .select()
     .single();
 
@@ -394,11 +423,13 @@ export async function updateAsset(id: string, assetData: UpdateAssetData): Promi
     source: data.source,
   });
 
-  const { data: updated, error: hashError } = await client
+  let hashQuery = client
     .from('assets')
     .update({ content_hash })
     .eq('id', id)
-    .eq('is_published', false)
+    .eq('is_published', false);
+  hashQuery = applyTenantEq(hashQuery, tenantId);
+  const { data: updated, error: hashError } = await hashQuery
     .select()
     .single();
 
@@ -419,6 +450,8 @@ export async function deleteAsset(id: string): Promise<void> {
   if (!client) {
     throw new Error('Supabase not configured');
   }
+
+  const tenantId = await resolveEffectiveTenantId();
 
   // Get draft asset
   const draftAsset = await getAssetById(id, false);
@@ -443,12 +476,14 @@ export async function deleteAsset(id: string): Promise<void> {
   }
 
   // Soft-delete the draft record
-  const { error } = await client
+  let deleteQuery = client
     .from('assets')
     .update({ deleted_at: new Date().toISOString() })
     .eq('id', id)
     .eq('is_published', false)
     .is('deleted_at', null);
+  deleteQuery = applyTenantEq(deleteQuery, tenantId);
+  const { error } = await deleteQuery;
 
   if (error) {
     throw new Error(`Failed to delete asset record: ${error.message}`);
@@ -470,17 +505,21 @@ export async function bulkDeleteAssets(ids: string[]): Promise<{ success: string
     return { success: [], failed: [] };
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+
   const draftAssets: Asset[] = [];
 
   // Get all draft assets in batches
   for (let i = 0; i < ids.length; i += SUPABASE_WRITE_BATCH_SIZE) {
     const batchIds = ids.slice(i, i + SUPABASE_WRITE_BATCH_SIZE);
-    const { data, error: fetchDraftError } = await client
+    let query = client
       .from('assets')
       .select('*')
       .in('id', batchIds)
       .eq('is_published', false)
       .is('deleted_at', null);
+    query = applyTenantEq(query, tenantId);
+    const { data, error: fetchDraftError } = await query;
 
     if (fetchDraftError) {
       throw new Error(`Failed to fetch draft assets: ${fetchDraftError.message}`);
@@ -495,11 +534,13 @@ export async function bulkDeleteAssets(ids: string[]): Promise<{ success: string
   const publishedIds = new Set<string>();
   for (let i = 0; i < ids.length; i += SUPABASE_WRITE_BATCH_SIZE) {
     const batchIds = ids.slice(i, i + SUPABASE_WRITE_BATCH_SIZE);
-    const { data: publishedAssets, error: fetchPublishedError } = await client
+    let query = client
       .from('assets')
       .select('id')
       .in('id', batchIds)
       .eq('is_published', true);
+    query = applyTenantEq(query, tenantId);
+    const { data: publishedAssets, error: fetchPublishedError } = await query;
 
     if (fetchPublishedError) {
       throw new Error(`Failed to fetch published assets: ${fetchPublishedError.message}`);
@@ -531,12 +572,14 @@ export async function bulkDeleteAssets(ids: string[]): Promise<{ success: string
   // Soft-delete all draft records in batches
   for (let i = 0; i < ids.length; i += SUPABASE_WRITE_BATCH_SIZE) {
     const batchIds = ids.slice(i, i + SUPABASE_WRITE_BATCH_SIZE);
-    const { error: deleteError } = await client
+    let deleteQ = client
       .from('assets')
       .update({ deleted_at: new Date().toISOString() })
       .in('id', batchIds)
       .eq('is_published', false)
       .is('deleted_at', null);
+    deleteQ = applyTenantEq(deleteQ, tenantId);
+    const { error: deleteError } = await deleteQ;
 
     if (deleteError) {
       throw new Error(`Failed to delete asset records: ${deleteError.message}`);
@@ -564,6 +607,7 @@ export async function bulkUpdateAssets(
     return { success: [], failed: [] };
   }
 
+  const tenantId = await resolveEffectiveTenantId();
   const now = new Date().toISOString();
 
   // Update fields, then recompute hashes from the full records
@@ -571,7 +615,7 @@ export async function bulkUpdateAssets(
     const batchIds = ids.slice(i, i + SUPABASE_WRITE_BATCH_SIZE);
 
     // Apply the field updates
-    const { error } = await client
+    let updateQ = client
       .from('assets')
       .update({
         ...updates,
@@ -580,18 +624,22 @@ export async function bulkUpdateAssets(
       .in('id', batchIds)
       .eq('is_published', false)
       .is('deleted_at', null);
+    updateQ = applyTenantEq(updateQ, tenantId);
+    const { error } = await updateQ;
 
     if (error) {
       throw new Error(`Failed to update assets: ${error.message}`);
     }
 
     // Fetch updated records and recompute hashes
-    const { data: updatedAssets } = await client
+    let fetchQ = client
       .from('assets')
       .select('*')
       .in('id', batchIds)
       .eq('is_published', false)
       .is('deleted_at', null);
+    fetchQ = applyTenantEq(fetchQ, tenantId);
+    const { data: updatedAssets } = await fetchQ;
 
     if (updatedAssets && updatedAssets.length > 0) {
       const hashRecords = updatedAssets.map(a => ({
@@ -609,6 +657,7 @@ export async function bulkUpdateAssets(
           content: a.content,
           source: a.source,
         }),
+        ...(tenantId ? { tenant_id: tenantId } : {}),
       }));
 
       await client
@@ -691,19 +740,24 @@ export async function getUnpublishedAssets(): Promise<Asset[]> {
     throw new Error('Supabase not configured');
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+
   // Fetch all draft assets (paginated)
   const draftAssets: Asset[] = [];
   let offset = 0;
   let hasMore = true;
 
   while (hasMore) {
-    const { data, error } = await client
+    let query = client
       .from('assets')
       .select('*')
       .eq('is_published', false)
       .is('deleted_at', null)
       .order('created_at', { ascending: false })
       .range(offset, offset + SUPABASE_QUERY_LIMIT - 1);
+    query = applyTenantEq(query, tenantId);
+
+    const { data, error } = await query;
 
     if (error) {
       throw new Error(`Failed to fetch draft assets: ${error.message}`);
@@ -730,11 +784,13 @@ export async function getUnpublishedAssets(): Promise<Asset[]> {
 
   for (let i = 0; i < draftIds.length; i += PUBLISHED_ASSET_HASH_BATCH_SIZE) {
     const batchIds = draftIds.slice(i, i + PUBLISHED_ASSET_HASH_BATCH_SIZE);
-    const { data: publishedAssets, error: publishedError } = await client
+    let query = client
       .from('assets')
       .select('id, content_hash')
       .in('id', batchIds)
       .eq('is_published', true);
+    query = applyTenantEq(query, tenantId);
+    const { data: publishedAssets, error: publishedError } = await query;
 
     if (publishedError) {
       throw new Error(`Failed to fetch published assets: ${publishedError.message}`);
@@ -762,16 +818,20 @@ export async function getDeletedDraftAssets(): Promise<Asset[]> {
     throw new Error('Supabase not configured');
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+
   const allAssets: Asset[] = [];
   let offset = 0;
 
   while (true) {
-    const { data, error } = await client
+    let query = client
       .from('assets')
       .select('*')
       .eq('is_published', false)
       .not('deleted_at', 'is', null)
       .range(offset, offset + SUPABASE_QUERY_LIMIT - 1);
+    query = applyTenantEq(query, tenantId);
+    const { data, error } = await query;
 
     if (error) {
       throw new Error(`Failed to fetch deleted draft assets: ${error.message}`);
@@ -802,16 +862,20 @@ export async function publishAssets(assetIds: string[]): Promise<{ count: number
     throw new Error('Supabase not configured');
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+
   // Fetch draft assets in batches
   const draftAssets: Asset[] = [];
   for (let i = 0; i < assetIds.length; i += SUPABASE_WRITE_BATCH_SIZE) {
     const batchIds = assetIds.slice(i, i + SUPABASE_WRITE_BATCH_SIZE);
-    const { data, error: fetchError } = await client
+    let query = client
       .from('assets')
       .select('*')
       .in('id', batchIds)
       .eq('is_published', false)
       .is('deleted_at', null);
+    query = applyTenantEq(query, tenantId);
+    const { data, error: fetchError } = await query;
 
     if (fetchError) {
       throw new Error(`Failed to fetch draft assets: ${fetchError.message}`);
@@ -830,11 +894,13 @@ export async function publishAssets(assetIds: string[]): Promise<{ count: number
   const publishedHashById = new Map<string, string | null>();
   for (let i = 0; i < assetIds.length; i += SUPABASE_WRITE_BATCH_SIZE) {
     const batchIds = assetIds.slice(i, i + SUPABASE_WRITE_BATCH_SIZE);
-    const { data: existingPublished } = await client
+    let query = client
       .from('assets')
       .select('id, content_hash')
       .in('id', batchIds)
       .eq('is_published', true);
+    query = applyTenantEq(query, tenantId);
+    const { data: existingPublished } = await query;
 
     existingPublished?.forEach(a => publishedHashById.set(a.id, a.content_hash));
   }
@@ -866,6 +932,7 @@ export async function publishAssets(assetIds: string[]): Promise<{ count: number
       created_at: draft.created_at,
       updated_at: now,
       deleted_at: null,
+      ...(tenantId ? { tenant_id: tenantId } : {}),
     });
   }
 
@@ -901,6 +968,8 @@ export async function hardDeleteSoftDeletedAssets(): Promise<{ count: number }> 
     throw new Error('Supabase not configured');
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+
   // Get all soft-deleted draft assets
   const deletedDrafts = await getDeletedDraftAssets();
 
@@ -915,23 +984,27 @@ export async function hardDeleteSoftDeletedAssets(): Promise<{ count: number }> 
     const batchIds = ids.slice(i, i + SUPABASE_WRITE_BATCH_SIZE);
 
     // Delete published versions
-    const { error: deletePublishedError } = await client
+    let pubDelQ = client
       .from('assets')
       .delete()
       .in('id', batchIds)
       .eq('is_published', true);
+    pubDelQ = applyTenantEq(pubDelQ, tenantId);
+    const { error: deletePublishedError } = await pubDelQ;
 
     if (deletePublishedError) {
       console.error('Failed to delete published assets:', deletePublishedError);
     }
 
     // Delete soft-deleted draft versions
-    const { error: deleteDraftError } = await client
+    let draftDelQ = client
       .from('assets')
       .delete()
       .in('id', batchIds)
       .eq('is_published', false)
       .not('deleted_at', 'is', null);
+    draftDelQ = applyTenantEq(draftDelQ, tenantId);
+    const { error: deleteDraftError } = await draftDelQ;
 
     if (deleteDraftError) {
       throw new Error(`Failed to delete draft assets: ${deleteDraftError.message}`);

@@ -10,6 +10,8 @@ import { generateImageSrcset, getImageSizes, getOptimizedImageUrl, getAssetProxy
 import { resolveComponents, applyComponentOverrides } from '@/lib/resolve-components';
 import { isTiptapDoc, hasBlockElementsWithResolver } from '@/lib/tiptap-utils';
 import { DEFAULT_TEXT_STYLES } from '@/lib/text-format-utils';
+import { resolveEffectiveTenantId } from '@/lib/masjidweb/effective-tenant-id';
+import { applyTenantEq } from '@/lib/masjidweb/apply-tenant-eq';
 
 // Pagination context passed through to resolveCollectionLayers
 export interface PaginationContext {
@@ -108,29 +110,32 @@ function matchDynamicPagePattern(urlPath: string, patternPath: string): string |
 export async function loadTranslationsForLocale(
   localeCode: string,
   isPublished: boolean,
-  tenantId?: string
 ): Promise<{ locale: Locale | null; translations: Record<string, Translation> }> {
   try {
-    const supabase = await getSupabaseAdmin(tenantId);
+    const supabase = await getSupabaseAdmin();
 
     if (!supabase) {
       return { locale: null, translations: {} };
     }
 
+    const tenantId = await resolveEffectiveTenantId();
+
     // Find the locale by code
-    const { data: locale } = await supabase
+    let localeQuery = supabase
       .from('locales')
       .select('*')
       .eq('code', localeCode)
       .eq('is_published', isPublished)
-      .is('deleted_at', null)
-      .single();
+      .is('deleted_at', null);
+    localeQuery = applyTenantEq(localeQuery, tenantId);
+    const { data: locale } = await localeQuery.single();
 
     if (!locale) {
       return { locale: null, translations: {} };
     }
 
     // Fetch all translations for this locale
+    // NOTE: translations table has no tenant_id column; isolation is via locale_id (locales are tenant-scoped)
     const { data: translations } = await supabase
       .from('translations')
       .select('*')
@@ -174,14 +179,15 @@ async function getCollectionItemBySlug(
   collectionFields?: CollectionField[],
   locale?: Locale | null,
   translations?: Record<string, Translation>,
-  tenantId?: string
 ): Promise<CollectionItemWithValues | null> {
   try {
-    const supabase = await getSupabaseAdmin(tenantId);
+    const supabase = await getSupabaseAdmin();
 
     if (!supabase) {
       return null;
     }
+
+    const tenantId = await resolveEffectiveTenantId();
 
     // If locale and translations are provided, try to find item by translated slug first
     if (locale && translations && collectionFields) {
@@ -201,14 +207,15 @@ async function getCollectionItemBySlug(
             const itemId = translation.source_id;
 
             // Verify this item belongs to the correct collection
-            const { data: item, error: itemError } = await supabase
+            let itemQuery = supabase
               .from('collection_items')
               .select('*')
               .eq('id', itemId)
               .eq('collection_id', collectionId)
               .eq('is_published', isPublished)
-              .is('deleted_at', null)
-              .single();
+              .is('deleted_at', null);
+            itemQuery = applyTenantEq(itemQuery, tenantId);
+            const { data: item, error: itemError } = await itemQuery.single();
 
             if (!itemError && item) {
               // Found the item via translation - return it with all values
@@ -220,29 +227,31 @@ async function getCollectionItemBySlug(
     }
 
     // Fall back to original slug lookup (no translation or translation not found)
-    const { data: valueData, error: valueError } = await supabase
+    let valueQuery = supabase
       .from('collection_item_values')
       .select('item_id')
       .eq('field_id', slugFieldId)
       .eq('value', slugValue)
       .eq('is_published', isPublished)
       .is('deleted_at', null)
-      .limit(1)
-      .single();
+      .limit(1);
+    valueQuery = applyTenantEq(valueQuery, tenantId);
+    const { data: valueData, error: valueError } = await valueQuery.single();
 
     if (valueError || !valueData) {
       return null;
     }
 
     // Verify the item belongs to the correct collection
-    const { data: item, error: itemError } = await supabase
+    let verifyQuery = supabase
       .from('collection_items')
       .select('*')
       .eq('id', valueData.item_id)
       .eq('collection_id', collectionId)
       .eq('is_published', isPublished)
-      .is('deleted_at', null)
-      .single();
+      .is('deleted_at', null);
+    verifyQuery = applyTenantEq(verifyQuery, tenantId);
+    const { data: item, error: itemError } = await verifyQuery.single();
 
     if (itemError || !item) {
       return null;
@@ -269,22 +278,25 @@ export const fetchPageByPath = cache(async function fetchPageByPath(
   slugPath: string,
   isPublished: boolean,
   paginationContext?: PaginationContext,
-  tenantId?: string
 ): Promise<PageData | null> {
   try {
-    const supabase = await getSupabaseAdmin(tenantId);
+    const supabase = await getSupabaseAdmin();
 
     if (!supabase) {
       console.error('Supabase not configured');
       return null;
     }
 
+    const tenantId = await resolveEffectiveTenantId();
+
     // Get all active locales from the database
-    const { data: availableLocales } = await supabase
+    let localesQuery = supabase
       .from('locales')
       .select('*')
       .eq('is_published', isPublished)
       .is('deleted_at', null);
+    localesQuery = applyTenantEq(localesQuery, tenantId);
+    const { data: availableLocales } = await localesQuery;
 
     const validLocaleCodes = availableLocales?.map(l => l.code) || [];
 
@@ -300,16 +312,19 @@ export const fetchPageByPath = cache(async function fetchPageByPath(
       const { locale, translations: trans } = await loadTranslationsForLocale(
         localeDetection.localeCode,
         isPublished,
-        tenantId
       );
       detectedLocale = locale;
       translations = trans;
     }
 
     // Fetch pages, folders, and components in parallel
+    let pagesQuery = supabase.from('pages').select('*').eq('is_published', isPublished).is('deleted_at', null);
+    pagesQuery = applyTenantEq(pagesQuery, tenantId);
+    let foldersQuery = supabase.from('page_folders').select('*').eq('is_published', isPublished).is('deleted_at', null);
+    foldersQuery = applyTenantEq(foldersQuery, tenantId);
     const [{ data: pages }, { data: folders }, components] = await Promise.all([
-      supabase.from('pages').select('*').eq('is_published', isPublished).is('deleted_at', null),
-      supabase.from('page_folders').select('*').eq('is_published', isPublished).is('deleted_at', null),
+      pagesQuery,
+      foldersQuery,
       fetchComponents(supabase, isPublished),
     ]);
 
@@ -407,7 +422,6 @@ export const fetchPageByPath = cache(async function fetchPageByPath(
               collectionFields,
               detectedLocale,
               translations,
-              tenantId
             );
 
             if (!collectionItem) {
@@ -419,15 +433,16 @@ export const fetchPageByPath = cache(async function fetchPageByPath(
             matchingPage = dynamicPage;
 
             // Get layers for the dynamic page
-            const { data: pageLayers, error: layersError } = await supabase
+            let dynLayersQuery = supabase
               .from('page_layers')
               .select('*')
               .eq('page_id', matchingPage.id)
               .eq('is_published', isPublished)
               .is('deleted_at', null)
               .order('created_at', { ascending: false })
-              .limit(1)
-              .single();
+              .limit(1);
+            dynLayersQuery = applyTenantEq(dynLayersQuery, tenantId);
+            const { data: pageLayers, error: layersError } = await dynLayersQuery.single();
 
             if (layersError) {
               console.error(`Failed to fetch ${isPublished ? 'published' : 'draft'} layers:`, layersError);
@@ -510,15 +525,16 @@ export const fetchPageByPath = cache(async function fetchPageByPath(
 
     // Handle non-dynamic page (exact match)
     // Get layers for the matched page
-    const { data: pageLayers, error: layersError } = await supabase
+    let staticLayersQuery = supabase
       .from('page_layers')
       .select('*')
       .eq('page_id', matchingPage.id)
       .eq('is_published', isPublished)
       .is('deleted_at', null)
       .order('created_at', { ascending: false })
-      .limit(1)
-      .single();
+      .limit(1);
+    staticLayersQuery = applyTenantEq(staticLayersQuery, tenantId);
+    const { data: pageLayers, error: layersError } = await staticLayersQuery.single();
 
     if (layersError) {
       console.error(`Failed to fetch ${isPublished ? 'published' : 'draft'} layers:`, layersError);
@@ -570,46 +586,51 @@ export const fetchPageByPath = cache(async function fetchPageByPath(
 export async function fetchErrorPage(
   errorCode: number,
   isPublished: boolean,
-  tenantId?: string
 ): Promise<PageData | null> {
   try {
-    const supabase = await getSupabaseAdmin(tenantId);
+    const supabase = await getSupabaseAdmin();
 
     if (!supabase) {
       console.error('Supabase not configured');
       return null;
     }
 
+    const tenantId = await resolveEffectiveTenantId();
+
     // Get all active locales from the database
-    const { data: availableLocales } = await supabase
+    let errLocalesQuery = supabase
       .from('locales')
       .select('*')
       .eq('is_published', isPublished)
       .is('deleted_at', null);
+    errLocalesQuery = applyTenantEq(errLocalesQuery, tenantId);
+    const { data: availableLocales } = await errLocalesQuery;
 
     // Get the error page
-    const { data: errorPage } = await supabase
+    let errPageQuery = supabase
       .from('pages')
       .select('*')
       .eq('error_page', errorCode)
       .eq('is_published', isPublished)
-      .is('deleted_at', null)
-      .single();
+      .is('deleted_at', null);
+    errPageQuery = applyTenantEq(errPageQuery, tenantId);
+    const { data: errorPage } = await errPageQuery.single();
 
     if (!errorPage) {
       return null;
     }
 
     // Get layers for the error page
-    const { data: pageLayers, error: layersError } = await supabase
+    let errLayersQuery = supabase
       .from('page_layers')
       .select('*')
       .eq('page_id', errorPage.id)
       .eq('is_published', isPublished)
       .is('deleted_at', null)
       .order('created_at', { ascending: false })
-      .limit(1)
-      .single();
+      .limit(1);
+    errLayersQuery = applyTenantEq(errLayersQuery, tenantId);
+    const { data: pageLayers, error: layersError } = await errLayersQuery.single();
 
     if (layersError) {
       console.error(`Failed to fetch ${isPublished ? 'published' : 'draft'} error page layers:`, layersError);
@@ -662,23 +683,28 @@ export const fetchHomepage = cache(async function fetchHomepage(
   isPublished: boolean,
   paginationContext?: PaginationContext,
   preloadedComponents?: Component[],
-  tenantId?: string
 ): Promise<Pick<PageData, 'page' | 'pageLayers' | 'components' | 'locale' | 'availableLocales' | 'translations'> | null> {
   try {
-    const supabase = await getSupabaseAdmin(tenantId);
+    const supabase = await getSupabaseAdmin();
 
     if (!supabase) {
       return null;
     }
 
+    const tenantId = await resolveEffectiveTenantId();
+
     // Fetch locales, homepage, and components in parallel
+    let hpLocalesQuery = supabase.from('locales').select('*').eq('is_published', isPublished).is('deleted_at', null);
+    hpLocalesQuery = applyTenantEq(hpLocalesQuery, tenantId);
+    let hpPageQuery = supabase.from('pages').select('*').eq('is_index', true).is('page_folder_id', null).eq('is_published', isPublished).is('deleted_at', null).limit(1);
+    hpPageQuery = applyTenantEq(hpPageQuery, tenantId);
     const [
       { data: availableLocales },
       { data: homepage },
       componentsResult,
     ] = await Promise.all([
-      supabase.from('locales').select('*').eq('is_published', isPublished).is('deleted_at', null),
-      supabase.from('pages').select('*').eq('is_index', true).is('page_folder_id', null).eq('is_published', isPublished).is('deleted_at', null).limit(1).single(),
+      hpLocalesQuery,
+      hpPageQuery.single(),
       preloadedComponents ? Promise.resolve(preloadedComponents) : fetchComponents(supabase, isPublished),
     ]);
 
@@ -689,15 +715,16 @@ export const fetchHomepage = cache(async function fetchHomepage(
     const components = componentsResult;
 
     // Get layers for homepage (depends on homepage.id)
-    const { data: pageLayers, error: layersError } = await supabase
+    let hpLayersQuery = supabase
       .from('page_layers')
       .select('*')
       .eq('page_id', homepage.id)
       .eq('is_published', isPublished)
       .is('deleted_at', null)
       .order('created_at', { ascending: false })
-      .limit(1)
-      .single();
+      .limit(1);
+    hpLayersQuery = applyTenantEq(hpLayersQuery, tenantId);
+    const { data: pageLayers, error: layersError } = await hpLayersQuery.single();
 
     if (layersError) {
       return null;
@@ -866,11 +893,14 @@ function injectTranslatedText(
  * @returns Array of components or empty array if fetch fails
  */
 async function fetchComponents(supabase: any, isPublished: boolean = false): Promise<Component[]> {
-  const { data: components } = await supabase
+  const tenantId = await resolveEffectiveTenantId();
+  let query = supabase
     .from('components')
     .select('*')
     .eq('is_published', isPublished)
     .is('deleted_at', null);
+  query = applyTenantEq(query, tenantId);
+  const { data: components } = await query;
   return components || [];
 }
 
@@ -2577,7 +2607,6 @@ export async function renderCollectionItemsToHtml(
   collectionItemSlugs?: Record<string, string>,
   locale?: Locale | null,
   translations?: Record<string, Translation>,
-  tenantId?: string,
   collectionLayerClasses?: string[],
   collectionLayerTag?: string,
 ): Promise<string> {

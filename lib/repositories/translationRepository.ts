@@ -3,6 +3,10 @@
  *
  * Data access layer for translations
  * Supports draft/published workflow with composite primary key (id, is_published)
+ *
+ * NOTE: The translations table does NOT have a tenant_id column.
+ * Tenant isolation for translations is achieved indirectly via locale_id
+ * (locales are tenant-scoped). Do not add tenant_id filtering here.
  */
 
 import { getSupabaseAdmin } from '@/lib/supabase-server';
@@ -159,7 +163,7 @@ export async function createTranslation(
         content_value: translationData.content_value,
         is_completed: translationData.is_completed ?? false,
         is_published: false,
-        deleted_at: null, // Restore if previously deleted
+        deleted_at: null,
       },
       {
         onConflict: 'locale_id,source_type,source_id,content_key,is_published',
@@ -192,7 +196,7 @@ export async function updateTranslation(
     .from('translations')
     .update({
       ...updates,
-      deleted_at: null, // Restore if previously deleted
+      deleted_at: null,
       updated_at: new Date().toISOString(),
     })
     .eq('id', id)
@@ -336,7 +340,7 @@ export async function upsertTranslations(
     content_type: t.content_type,
     content_value: t.content_value,
     is_published: false,
-    deleted_at: null, // Restore if previously deleted
+    deleted_at: null,
   }));
 
   const { data, error } = await client

@@ -4,6 +4,7 @@
  * Data access layer for application settings stored in the database
  */
 
+import { resolveEffectiveTenantId } from '@/lib/masjidweb/effective-tenant-id';
 import { getSupabaseAdmin } from '@/lib/supabase-server';
 import type { Setting } from '@/types';
 
@@ -18,10 +19,13 @@ export async function getAllSettings(): Promise<Setting[]> {
     throw new Error('Failed to initialize Supabase client');
   }
 
-  const { data, error } = await client
-    .from('settings')
-    .select('*')
-    .order('key', { ascending: true });
+  let listQuery = client.from('settings').select('*').order('key', { ascending: true });
+  const listTid = await resolveEffectiveTenantId();
+  if (listTid) {
+    listQuery = listQuery.eq('tenant_id', listTid);
+  }
+
+  const { data, error } = await listQuery;
 
   if (error) {
     throw new Error(`Failed to fetch settings: ${error.message}`);
@@ -42,21 +46,19 @@ export async function getSettingByKey(key: string): Promise<any | null> {
     throw new Error('Failed to initialize Supabase client');
   }
 
-  const { data, error } = await client
-    .from('settings')
-    .select('value')
-    .eq('key', key)
-    .single();
+  let oneQuery = client.from('settings').select('value').eq('key', key);
+  const oneTid = await resolveEffectiveTenantId();
+  if (oneTid) {
+    oneQuery = oneQuery.eq('tenant_id', oneTid);
+  }
+
+  const { data, error } = await oneQuery.maybeSingle();
 
   if (error) {
-    if (error.code === 'PGRST116') {
-      // Not found
-      return null;
-    }
     throw new Error(`Failed to fetch setting: ${error.message}`);
   }
 
-  return data?.value || null;
+  return data?.value ?? null;
 }
 
 /**
@@ -75,10 +77,13 @@ export async function getSettingsByKeys(keys: string[]): Promise<Record<string, 
     throw new Error('Failed to initialize Supabase client');
   }
 
-  const { data, error } = await client
-    .from('settings')
-    .select('key, value')
-    .in('key', keys);
+  let keysQuery = client.from('settings').select('key, value').in('key', keys);
+  const keysTid = await resolveEffectiveTenantId();
+  if (keysTid) {
+    keysQuery = keysQuery.eq('tenant_id', keysTid);
+  }
+
+  const { data, error } = await keysQuery;
 
   if (error) {
     throw new Error(`Failed to fetch settings: ${error.message}`);
@@ -105,14 +110,20 @@ export async function setSetting(key: string, value: any): Promise<Setting> {
     throw new Error('Failed to initialize Supabase client');
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+  const row: Record<string, unknown> = {
+    key,
+    value,
+    updated_at: new Date().toISOString(),
+  };
+  if (tenantId) {
+    row.tenant_id = tenantId;
+  }
+
   const { data, error } = await client
     .from('settings')
-    .upsert({
-      key,
-      value,
-      updated_at: new Date().toISOString(),
-    }, {
-      onConflict: 'key',
+    .upsert(row, {
+      onConflict: tenantId ? 'tenant_id,key' : 'key',
     })
     .select()
     .single();
@@ -142,6 +153,8 @@ export async function setSettings(settings: Record<string, any>): Promise<number
     throw new Error('Failed to initialize Supabase client');
   }
 
+  const batchTenantId = await resolveEffectiveTenantId();
+
   // Separate entries: null/undefined values should be deleted, others upserted
   const toUpsert: [string, any][] = [];
   const toDelete: string[] = [];
@@ -156,10 +169,12 @@ export async function setSettings(settings: Record<string, any>): Promise<number
 
   // Delete settings with null values
   if (toDelete.length > 0) {
-    const { error: deleteError } = await client
-      .from('settings')
-      .delete()
-      .in('key', toDelete);
+    let delQuery = client.from('settings').delete().in('key', toDelete);
+    if (batchTenantId) {
+      delQuery = delQuery.eq('tenant_id', batchTenantId);
+    }
+
+    const { error: deleteError } = await delQuery;
 
     if (deleteError) {
       throw new Error(`Failed to delete settings: ${deleteError.message}`);
@@ -173,12 +188,13 @@ export async function setSettings(settings: Record<string, any>): Promise<number
       key,
       value,
       updated_at: now,
+      ...(batchTenantId ? { tenant_id: batchTenantId } : {}),
     }));
 
     const { error } = await client
       .from('settings')
       .upsert(records, {
-        onConflict: 'key',
+        onConflict: batchTenantId ? 'tenant_id,key' : 'key',
       });
 
     if (error) {

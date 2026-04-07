@@ -57,14 +57,15 @@ const nextConfig: NextConfig = {
         ],
       },
       {
-        // Apply to public pages ONLY (exclude /ycode/*, /_next/*, /a/*)
         source: '/:path((?!ycode|_next|a/).*)*',
         headers: [
           {
             key: 'Cache-Control',
-            // Cache until re-published: CDN caches for up to 1 year
-            // On publish, revalidatePath purges CDN; revalidateTag purges data cache
-            value: 'public, s-maxage=31536000, stale-while-revalidate=31536000',
+            // `private` keeps shared caches (Netlify Edge, other CDNs) from storing HTML, so
+            // a publish + revalidateTag is visible on the next load — no edge TTL / “stale” window.
+            // Tenant-scoped Netlify-Cache-Tag + purge still helps internal invalidation when
+            // NETLIFY_PURGE_API_TOKEN is set. `/a/*` assets stay `public, immutable` (rule above).
+            value: 'private, max-age=0, must-revalidate',
           },
         ],
       },

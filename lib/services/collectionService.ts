@@ -13,6 +13,8 @@
 
 import { withTransaction } from '../database/transaction';
 import { getSupabaseAdmin } from '@/lib/supabase-server';
+import { resolveEffectiveTenantId } from '@/lib/masjidweb/effective-tenant-id';
+import { applyTenantEq } from '@/lib/masjidweb/apply-tenant-eq';
 import { getCollectionById, hardDeleteCollection } from '@/lib/repositories/collectionRepository';
 import { getFieldsByCollectionId } from '@/lib/repositories/collectionFieldRepository';
 import { getItemsByCollectionId, getAllItemsByCollectionId, getItemById, getItemsByIds } from '@/lib/repositories/collectionItemRepository';
@@ -280,6 +282,8 @@ async function publishCollectionMetadata(collectionId: string): Promise<boolean>
     return false;
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+
   // Upsert published version (composite key handles insert/update automatically)
   const { error } = await client
     .from('collections')
@@ -291,6 +295,7 @@ async function publishCollectionMetadata(collectionId: string): Promise<boolean>
       is_published: true,
       created_at: draft.created_at,
       updated_at: new Date().toISOString(),
+      ...(tenantId ? { tenant_id: tenantId } : {}),
     }, {
       onConflict: 'id,is_published',
     });
@@ -315,16 +320,22 @@ async function publishAllFields(collectionId: string): Promise<number> {
     throw new Error('Supabase not configured');
   }
 
-  // Get all draft fields
-  const draftFields = await getFieldsByCollectionId(collectionId, false);
+  // Include tenant_id / tenant_slug so their published field rows exist (required to publish item values that reference them).
+  const draftFields = await getFieldsByCollectionId(collectionId, false, {
+    includeSystemFields: true,
+  });
 
   if (draftFields.length === 0) {
     return 0;
   }
 
   // Get published fields for comparison
-  const publishedFields = await getFieldsByCollectionId(collectionId, true);
+  const publishedFields = await getFieldsByCollectionId(collectionId, true, {
+    includeSystemFields: true,
+  });
   const publishedById = new Map(publishedFields.map(f => [f.id, f]));
+
+  const tenantId = await resolveEffectiveTenantId();
 
   // Only upsert fields that are new or changed
   const now = new Date().toISOString();
@@ -366,6 +377,7 @@ async function publishAllFields(collectionId: string): Promise<number> {
       is_published: true,
       created_at: field.created_at,
       updated_at: now,
+      ...(tenantId ? { tenant_id: tenantId } : {}),
     });
   }
 
@@ -430,14 +442,18 @@ async function publishSelectedItems(
   const publishableItems = draftItems.filter(item => item.is_publishable);
   const nonPublishableItems = draftItems.filter(item => !item.is_publishable);
 
+  const tenantId = await resolveEffectiveTenantId();
+
   // Remove published versions of non-publishable items
   if (nonPublishableItems.length > 0) {
     const nonPublishableIds = nonPublishableItems.map(item => item.id);
-    await client
+    let delQuery = client
       .from('collection_items')
       .delete()
       .in('id', nonPublishableIds)
       .eq('is_published', true);
+    delQuery = applyTenantEq(delQuery, tenantId);
+    await delQuery;
   }
 
   if (publishableItems.length === 0) {
@@ -479,6 +495,7 @@ async function publishSelectedItems(
       content_hash: item.content_hash,
       created_at: item.created_at,
       updated_at: now,
+      ...(tenantId ? { tenant_id: tenantId } : {}),
     });
     itemIdsToPublishValues.push(item.id);
   }
@@ -524,6 +541,8 @@ async function publishItemValuesBatch(itemIds: string[]): Promise<number> {
     return 0;
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+
   // Batch fetch all draft values
   const allDraftValues = await Promise.all(
     itemIds.map(itemId => getValuesByItemId(itemId, false))
@@ -568,6 +587,7 @@ async function publishItemValuesBatch(itemIds: string[]): Promise<number> {
       is_published: true,
       created_at: value.created_at,
       updated_at: now,
+      ...(tenantId ? { tenant_id: tenantId } : {}),
     });
   }
 
@@ -684,20 +704,25 @@ async function cleanupDeletedPublishedItems(collectionId: string): Promise<void>
 
   // Extract item IDs
   const deletedItemIds = deletedDraftItems.map(item => item.id);
+  const tenantId = await resolveEffectiveTenantId();
 
   // Batch hard delete published versions (CASCADE will delete values)
-  await client
+  let delPubItems = client
     .from('collection_items')
     .delete()
     .in('id', deletedItemIds)
     .eq('is_published', true);
+  delPubItems = applyTenantEq(delPubItems, tenantId);
+  await delPubItems;
 
   // Batch hard delete draft versions (CASCADE will delete values)
-  await client
+  let delDraftItems = client
     .from('collection_items')
     .delete()
     .in('id', deletedItemIds)
     .eq('is_published', false);
+  delDraftItems = applyTenantEq(delDraftItems, tenantId);
+  await delDraftItems;
 }
 
 /**
@@ -714,13 +739,17 @@ async function cleanupDeletedPublishedFields(collectionId: string): Promise<void
     throw new Error('Supabase client not configured');
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+
   // Query for soft-deleted draft fields
-  const { data: deletedDraftFields, error } = await client
+  let delFieldsQuery = client
     .from('collection_fields')
     .select('*')
     .eq('collection_id', collectionId)
     .eq('is_published', false)
-    .not('deleted_at', 'is', null); // Only get deleted fields
+    .not('deleted_at', 'is', null);
+  delFieldsQuery = applyTenantEq(delFieldsQuery, tenantId);
+  const { data: deletedDraftFields, error } = await delFieldsQuery;
 
   if (error || !deletedDraftFields || deletedDraftFields.length === 0) {
     return;
@@ -730,18 +759,22 @@ async function cleanupDeletedPublishedFields(collectionId: string): Promise<void
   const deletedFieldIds = deletedDraftFields.map(field => field.id);
 
   // Batch hard delete published versions (CASCADE will delete values)
-  await client
+  let delPubFields = client
     .from('collection_fields')
     .delete()
     .in('id', deletedFieldIds)
     .eq('is_published', true);
+  delPubFields = applyTenantEq(delPubFields, tenantId);
+  await delPubFields;
 
   // Batch hard delete draft versions (CASCADE will delete values)
-  await client
+  let delDraftFields = client
     .from('collection_fields')
     .delete()
     .in('id', deletedFieldIds)
     .eq('is_published', false);
+  delDraftFields = applyTenantEq(delDraftFields, tenantId);
+  await delDraftFields;
 }
 
 /**
@@ -774,12 +807,16 @@ export async function cleanupDeletedCollections(): Promise<void> {
     throw new Error('Supabase not configured');
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+
   // Find all soft-deleted draft collections
-  const { data: deletedCollections, error } = await client
+  let delCollQuery = client
     .from('collections')
     .select('id')
     .eq('is_published', false)
     .not('deleted_at', 'is', null);
+  delCollQuery = applyTenantEq(delCollQuery, tenantId);
+  const { data: deletedCollections, error } = await delCollQuery;
 
   if (error) {
     throw new Error(`Failed to fetch deleted collections: ${error.message}`);
@@ -793,18 +830,22 @@ export async function cleanupDeletedCollections(): Promise<void> {
   const collectionIds = deletedCollections.map(c => c.id);
 
   // Batch delete published versions (CASCADE deletes all related data: fields, items, values)
-  await client
+  let delPubColl = client
     .from('collections')
     .delete()
     .in('id', collectionIds)
     .eq('is_published', true);
+  delPubColl = applyTenantEq(delPubColl, tenantId);
+  await delPubColl;
 
   // Batch delete draft versions (CASCADE deletes all related data: fields, items, values)
-  await client
+  let delDraftColl = client
     .from('collections')
     .delete()
     .in('id', collectionIds)
     .eq('is_published', false);
+  delDraftColl = applyTenantEq(delDraftColl, tenantId);
+  await delDraftColl;
 }
 
 /**
@@ -868,9 +909,13 @@ export async function needsPublishing(collectionId: string): Promise<boolean> {
     return true;
   }
 
-  // Check if any fields need publishing
-  const draftFields = await getFieldsByCollectionId(collectionId, false);
-  const publishedFields = await getFieldsByCollectionId(collectionId, true);
+  // Include system fields so length/content checks reflect unpublished tenancy columns.
+  const draftFields = await getFieldsByCollectionId(collectionId, false, {
+    includeSystemFields: true,
+  });
+  const publishedFields = await getFieldsByCollectionId(collectionId, true, {
+    includeSystemFields: true,
+  });
 
   if (draftFields.length !== publishedFields.length) {
     return true;
@@ -905,11 +950,14 @@ export async function groupItemsByCollection(
     return new Map();
   }
 
-  const { data: items, error } = await client
+  const tenantId = await resolveEffectiveTenantId();
+  let groupQuery = client
     .from('collection_items')
     .select('id, collection_id')
     .eq('is_published', false)
     .in('id', itemIds);
+  groupQuery = applyTenantEq(groupQuery, tenantId);
+  const { data: items, error } = await groupQuery;
 
   if (error) {
     throw new Error(`Failed to fetch collection items: ${error.message}`);

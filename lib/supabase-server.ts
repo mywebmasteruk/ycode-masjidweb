@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'async_hooks';
 
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { resolveEffectiveTenantId } from '@/lib/masjidweb/effective-tenant-id';
 import { credentials } from './credentials';
 import { parseSupabaseConfig } from './supabase-config-parser';
 import type { SupabaseConfig, SupabaseCredentials } from '@/types';
@@ -51,14 +52,23 @@ export const getSupabaseConfig = getSupabaseCredentials;
 let cachedClient: SupabaseClient | null = null;
 let cachedCredentials: string | null = null;
 
+let loggedMissingAdminCreds = false;
+
 /**
- * Get Supabase client with service role key (admin access)
+ * Get Supabase client with service role key (admin access).
+ * Tenant scoping is done in queries (e.g. `resolveEffectiveTenantId`), not on the client.
  */
-export async function getSupabaseAdmin(tenantId?: string): Promise<SupabaseClient | null> {
+export async function getSupabaseAdmin(): Promise<SupabaseClient | null> {
   const creds = await getSupabaseCredentials();
 
   if (!creds) {
-    console.error('[getSupabaseAdmin] No credentials returned!');
+    const duringNextBuild = process.env.NEXT_PHASE === 'phase-production-build';
+    if (!duringNextBuild && !loggedMissingAdminCreds) {
+      loggedMissingAdminCreds = true;
+      console.warn(
+        '[getSupabaseAdmin] No stored Supabase credentials yet (complete setup in /ycode or configure storage).',
+      );
+    }
     return null;
   }
 
@@ -118,13 +128,10 @@ export async function testSupabaseConnection(
 }
 
 /**
- * Get tenant ID from request headers.
- *
- * Base implementation: always returns null (single-tenant, no scoping needed).
- * Overridden via path alias in multi-tenant deployments.
+ * Delegates to `resolveEffectiveTenantId` — kept as the name Knex helpers use.
  */
 export async function getTenantIdFromHeaders(): Promise<string | null> {
-  return null;
+  return resolveEffectiveTenantId();
 }
 
 /**

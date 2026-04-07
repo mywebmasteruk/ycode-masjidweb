@@ -6,6 +6,8 @@
  */
 
 import { getSupabaseAdmin } from '@/lib/supabase-server';
+import { resolveEffectiveTenantId } from '@/lib/masjidweb/effective-tenant-id';
+import { applyTenantEq } from '@/lib/masjidweb/apply-tenant-eq';
 import type { ColorVariable } from '@/types';
 
 export interface CreateColorVariableData {
@@ -54,11 +56,15 @@ export async function getAllColorVariables(): Promise<ColorVariable[]> {
     throw new Error('Supabase not configured');
   }
 
-  const { data, error } = await client
+  const tenantId = await resolveEffectiveTenantId();
+  let query = client
     .from('color_variables')
     .select('*')
     .order('sort_order', { ascending: true })
     .order('created_at', { ascending: true });
+  query = applyTenantEq(query, tenantId);
+
+  const { data, error } = await query;
 
   if (error) {
     throw new Error(`Failed to fetch color variables: ${error.message}`);
@@ -74,11 +80,14 @@ export async function getColorVariableById(id: string): Promise<ColorVariable | 
     throw new Error('Supabase not configured');
   }
 
-  const { data, error } = await client
+  const tenantId = await resolveEffectiveTenantId();
+  let query = client
     .from('color_variables')
     .select('*')
-    .eq('id', id)
-    .single();
+    .eq('id', id);
+  query = applyTenantEq(query, tenantId);
+
+  const { data, error } = await query.single();
 
   if (error) {
     if (error.code === 'PGRST116') {
@@ -99,18 +108,25 @@ export async function createColorVariable(
     throw new Error('Supabase not configured');
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+
   // Get max sort_order to append at end
-  const { data: maxRow } = await client
+  let maxQuery = client
     .from('color_variables')
     .select('sort_order')
     .order('sort_order', { ascending: false })
-    .limit(1)
-    .single();
+    .limit(1);
+  maxQuery = applyTenantEq(maxQuery, tenantId);
+  const { data: maxRow } = await maxQuery.single();
   const nextOrder = (maxRow?.sort_order ?? -1) + 1;
 
   const { data, error } = await client
     .from('color_variables')
-    .insert({ ...variableData, sort_order: nextOrder })
+    .insert({
+      ...variableData,
+      sort_order: nextOrder,
+      ...(tenantId ? { tenant_id: tenantId } : {}),
+    })
     .select()
     .single();
 
@@ -131,12 +147,14 @@ export async function updateColorVariable(
     throw new Error('Supabase not configured');
   }
 
-  const { data, error } = await client
+  const tenantId = await resolveEffectiveTenantId();
+  let query = client
     .from('color_variables')
     .update({ ...updates, updated_at: new Date().toISOString() })
-    .eq('id', id)
-    .select()
-    .single();
+    .eq('id', id);
+  query = applyTenantEq(query, tenantId);
+
+  const { data, error } = await query.select().single();
 
   if (error) {
     throw new Error(`Failed to update color variable: ${error.message}`);
@@ -152,10 +170,14 @@ export async function deleteColorVariable(id: string): Promise<void> {
     throw new Error('Supabase not configured');
   }
 
-  const { error } = await client
+  const tenantId = await resolveEffectiveTenantId();
+  let query = client
     .from('color_variables')
     .delete()
     .eq('id', id);
+  query = applyTenantEq(query, tenantId);
+
+  const { error } = await query;
 
   if (error) {
     throw new Error(`Failed to delete color variable: ${error.message}`);
@@ -171,11 +193,16 @@ export async function reorderColorVariables(
     throw new Error('Supabase not configured');
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+
   // Fetch full rows so upsert includes all NOT NULL columns
-  const { data: existing, error: fetchError } = await client
+  let fetchQuery = client
     .from('color_variables')
     .select('*')
     .in('id', orderedIds);
+  fetchQuery = applyTenantEq(fetchQuery, tenantId);
+
+  const { data: existing, error: fetchError } = await fetchQuery;
 
   if (fetchError) {
     throw new Error(`Failed to fetch color variables for reorder: ${fetchError.message}`);
@@ -188,7 +215,12 @@ export async function reorderColorVariables(
     .map((id, index) => {
       const row = existingMap.get(id);
       if (!row) return null;
-      return { ...row, sort_order: index, updated_at: now };
+      return {
+        ...row,
+        sort_order: index,
+        updated_at: now,
+        ...(tenantId ? { tenant_id: tenantId } : {}),
+      };
     })
     .filter(Boolean);
 

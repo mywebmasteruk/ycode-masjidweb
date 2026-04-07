@@ -1,27 +1,59 @@
 import { unstable_cache } from 'next/cache';
 import Link from 'next/link';
+import { cache } from 'react';
 import { fetchHomepage, fetchErrorPage } from '@/lib/page-fetcher';
 import PageRenderer from '@/components/PageRenderer';
 import PasswordForm from '@/components/PasswordForm';
 import { generatePageMetadata, fetchGlobalPageSettings } from '@/lib/generate-page-metadata';
 import { parseAuthCookie, getPasswordProtection, fetchFoldersForAuth } from '@/lib/page-auth';
+import { getSettingByKey } from '@/lib/repositories/settingsRepository';
+import { resolveEffectiveTenantId } from '@/lib/masjidweb/effective-tenant-id';
+import {
+  tenantAllPagesTag,
+  tenantRouteTag,
+} from '@/lib/masjidweb/tenant-cache-tags';
 import { getSiteBaseUrl } from '@/lib/url-utils';
 import type { Metadata } from 'next';
 
-// Static by default for performance, dynamic only when pagination is requested
-export const revalidate = false; // Cache indefinitely until publish invalidates
+// Avoid ISR full-route caching on Netlify (stale HTML after publish). Data uses
+// unstable_cache + tenant-scoped revalidateTag on publish.
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+
+const getTenantCacheContext = cache(async () => {
+  const effectiveTid = await resolveEffectiveTenantId();
+  let publishedAtVersion = '_';
+  try {
+    const publishedAt = await getSettingByKey('published_at');
+    if (typeof publishedAt === 'string' && publishedAt.trim()) {
+      publishedAtVersion = publishedAt.trim();
+    } else if (publishedAt != null) {
+      publishedAtVersion = JSON.stringify(publishedAt);
+    }
+  } catch {
+    // Non-fatal: keep a stable fallback suffix.
+  }
+  return {
+    effectiveTid,
+    keySuffix: `${effectiveTid ?? '_'}:${publishedAtVersion}`,
+  };
+});
 
 /**
  * Fetch homepage data from database
  * Cached with tag-based revalidation (no time-based stale cache)
  */
 async function fetchPublishedHomepage() {
+  const { effectiveTid, keySuffix } = await getTenantCacheContext();
   try {
     return await unstable_cache(
       async () => fetchHomepage(true),
-      ['data-for-route-/'],
+      ['data-for-route-/', keySuffix],
       {
-        tags: ['all-pages', 'route-/'], // all-pages for full publish invalidation, route-/ for targeted
+        tags: [
+          tenantAllPagesTag(effectiveTid),
+          tenantRouteTag(effectiveTid, '/'),
+        ],
         revalidate: false,
       }
     )();
@@ -37,11 +69,12 @@ async function fetchPublishedHomepage() {
 }
 
 async function fetchCachedGlobalSettings() {
+  const { effectiveTid, keySuffix } = await getTenantCacheContext();
   try {
     return await unstable_cache(
       async () => fetchGlobalPageSettings(),
-      ['data-for-global-settings'],
-      { tags: ['all-pages'], revalidate: false }
+      ['data-for-global-settings', keySuffix],
+      { tags: [tenantAllPagesTag(effectiveTid)], revalidate: false }
     )();
   } catch {
     return {
@@ -60,11 +93,12 @@ async function fetchCachedGlobalSettings() {
 }
 
 async function fetchCachedFoldersForAuth() {
+  const { effectiveTid, keySuffix } = await getTenantCacheContext();
   try {
     return await unstable_cache(
       async () => fetchFoldersForAuth(true),
-      ['data-for-auth-folders'],
-      { tags: ['all-pages'], revalidate: false }
+      ['data-for-auth-folders', keySuffix],
+      { tags: [tenantAllPagesTag(effectiveTid)], revalidate: false }
     )();
   } catch {
     return [];
@@ -72,11 +106,12 @@ async function fetchCachedFoldersForAuth() {
 }
 
 async function fetchCachedErrorPage(errorCode: 401) {
+  const { effectiveTid, keySuffix } = await getTenantCacheContext();
   try {
     return await unstable_cache(
       async () => fetchErrorPage(errorCode, true),
-      [`data-for-error-page-${errorCode}`],
-      { tags: ['all-pages'], revalidate: false }
+      [`data-for-error-page-${errorCode}`, keySuffix],
+      { tags: [tenantAllPagesTag(effectiveTid)], revalidate: false }
     )();
   } catch {
     return null;
@@ -214,6 +249,7 @@ export async function generateMetadata(): Promise<Metadata> {
     }
   }
 
+  const { effectiveTid, keySuffix } = await getTenantCacheContext();
   const { meta, baseUrl } = await unstable_cache(
     async () => ({
       meta: await generatePageMetadata(data.page, {
@@ -223,8 +259,14 @@ export async function generateMetadata(): Promise<Metadata> {
       }),
       baseUrl: getSiteBaseUrl({ globalCanonicalUrl: globalSettings.globalCanonicalUrl }),
     }),
-    ['data-for-route-/-meta'],
-    { tags: ['all-pages', 'route-/'], revalidate: false }
+    ['data-for-route-/-meta', keySuffix],
+    {
+      tags: [
+        tenantAllPagesTag(effectiveTid),
+        tenantRouteTag(effectiveTid, '/'),
+      ],
+      revalidate: false,
+    }
   )();
 
   if (baseUrl) {

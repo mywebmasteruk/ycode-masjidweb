@@ -21,7 +21,7 @@ export async function POST(request: NextRequest) {
 
     // Invalidate each tag
     for (const tag of tags) {
-      revalidateTag(tag, { expire: 0 });
+      revalidateTag(tag, 'max');
     }
 
     return noCache({

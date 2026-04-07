@@ -11,6 +11,8 @@ import type { Component, Layer } from '@/types';
 import { generateComponentContentHash } from '../hash-utils';
 import { deleteTranslationsInBulk, markTranslationsIncomplete } from '@/lib/repositories/translationRepository';
 import { extractLayerContentMap } from '../localisation-utils';
+import { resolveEffectiveTenantId } from '@/lib/masjidweb/effective-tenant-id';
+import { applyTenantEq } from '@/lib/masjidweb/apply-tenant-eq';
 
 /**
  * Input data for creating a new component
@@ -30,12 +32,17 @@ export async function getAllComponents(isPublished: boolean = false): Promise<Co
     throw new Error('Failed to initialize Supabase client');
   }
 
-  const { data, error } = await client
+  const tenantId = await resolveEffectiveTenantId();
+
+  let query = client
     .from('components')
     .select('*')
     .eq('is_published', isPublished)
     .is('deleted_at', null)
     .order('created_at', { ascending: false });
+  query = applyTenantEq(query, tenantId);
+
+  const { data, error } = await query;
 
   if (error) {
     throw new Error(`Failed to fetch components: ${error.message}`);
@@ -54,17 +61,21 @@ export async function getComponentById(id: string, isPublished: boolean = false)
     throw new Error('Failed to initialize Supabase client');
   }
 
-  const { data, error } = await client
+  const tenantId = await resolveEffectiveTenantId();
+
+  let query = client
     .from('components')
     .select('*')
     .eq('id', id)
     .eq('is_published', isPublished)
-    .is('deleted_at', null)
-    .single();
+    .is('deleted_at', null);
+  query = applyTenantEq(query, tenantId);
+
+  const { data, error } = await query.single();
 
   if (error) {
     if (error.code === 'PGRST116') {
-      return null; // Not found
+      return null;
     }
     throw new Error(`Failed to fetch component: ${error.message}`);
   }
@@ -89,18 +100,22 @@ export async function getComponentsByIds(
     return {};
   }
 
-  const { data, error } = await client
+  const tenantId = await resolveEffectiveTenantId();
+
+  let query = client
     .from('components')
     .select('*')
     .in('id', ids)
     .eq('is_published', isPublished)
     .is('deleted_at', null);
+  query = applyTenantEq(query, tenantId);
+
+  const { data, error } = await query;
 
   if (error) {
     throw new Error(`Failed to fetch components: ${error.message}`);
   }
 
-  // Convert array to map for O(1) lookup
   const componentMap: Record<string, Component> = {};
   data?.forEach(component => {
     componentMap[component.id] = component;
@@ -120,7 +135,8 @@ export async function createComponent(
     throw new Error('Failed to initialize Supabase client');
   }
 
-  // Calculate content hash
+  const tenantId = await resolveEffectiveTenantId();
+
   const contentHash = generateComponentContentHash({
     name: componentData.name,
     layers: componentData.layers,
@@ -133,11 +149,12 @@ export async function createComponent(
     content_hash: contentHash,
     is_published: false,
   };
-  
-  // Include variables if provided
+
   if (componentData.variables?.length) {
     insertData.variables = componentData.variables;
   }
+
+  if (tenantId) insertData.tenant_id = tenantId;
 
   const { data, error } = await client
     .from('components')
@@ -164,47 +181,41 @@ export async function updateComponent(
     throw new Error('Failed to initialize Supabase client');
   }
 
-  // Get current component to merge with updates
+  const tenantId = await resolveEffectiveTenantId();
+
   const current = await getComponentById(id);
   if (!current) {
     throw new Error('Component not found');
   }
 
-  // Detect removed and changed layer content if layers are being updated
   if (updates.layers !== undefined) {
     const oldContentMap = extractLayerContentMap(current.layers || [], 'component', id);
     const newContentMap = extractLayerContentMap(updates.layers, 'component', id);
 
-    // Find removed keys (exist in old but not in new)
     const removedKeys = Object.keys(oldContentMap).filter(key => !(key in newContentMap));
 
-    // Find changed keys (exist in both but value differs)
     const changedKeys = Object.keys(newContentMap).filter(
       key => key in oldContentMap && oldContentMap[key] !== newContentMap[key]
     );
 
-    // Delete translations for removed content
     if (removedKeys.length > 0) {
       await deleteTranslationsInBulk('component', id, removedKeys);
     }
 
-    // Mark translations as incomplete for changed content
     if (changedKeys.length > 0) {
       await markTranslationsIncomplete('component', id, changedKeys);
     }
   }
 
-  // Merge current data with updates for hash calculation
   const finalData = {
     name: updates.name !== undefined ? updates.name : current.name,
     layers: updates.layers !== undefined ? updates.layers : current.layers,
     variables: updates.variables !== undefined ? updates.variables : current.variables,
   };
 
-  // Recalculate content hash
   const contentHash = generateComponentContentHash(finalData);
 
-  const { data, error } = await client
+  let query = client
     .from('components')
     .update({
       ...updates,
@@ -212,9 +223,10 @@ export async function updateComponent(
       updated_at: new Date().toISOString(),
     })
     .eq('id', id)
-    .eq('is_published', false) // Update draft version only
-    .select()
-    .single();
+    .eq('is_published', false);
+  query = applyTenantEq(query, tenantId);
+
+  const { data, error } = await query.select().single();
 
   if (error) {
     throw new Error(`Failed to update component: ${error.message}`);
@@ -233,16 +245,20 @@ export async function getPublishedComponentById(id: string): Promise<Component |
     throw new Error('Failed to initialize Supabase client');
   }
 
-  const { data, error } = await client
+  const tenantId = await resolveEffectiveTenantId();
+
+  let query = client
     .from('components')
     .select('*')
     .eq('id', id)
-    .eq('is_published', true)
-    .single();
+    .eq('is_published', true);
+  query = applyTenantEq(query, tenantId);
+
+  const { data, error } = await query.single();
 
   if (error) {
     if (error.code === 'PGRST116') {
-      return null; // Not found
+      return null;
     }
     throw new Error(`Failed to fetch published component: ${error.message}`);
   }
@@ -261,23 +277,24 @@ export async function publishComponent(draftComponentId: string): Promise<Compon
     throw new Error('Failed to initialize Supabase client');
   }
 
-  // Get the draft component
+  const tenantId = await resolveEffectiveTenantId();
+
   const draftComponent = await getComponentById(draftComponentId);
   if (!draftComponent) {
     throw new Error('Draft component not found');
   }
 
-  // Upsert published version - composite key handles insert/update automatically
   const { data, error } = await client
     .from('components')
     .upsert({
-      id: draftComponent.id, // Same ID for draft and published versions
+      id: draftComponent.id,
       name: draftComponent.name,
       layers: draftComponent.layers,
       variables: draftComponent.variables,
-      content_hash: draftComponent.content_hash, // Copy hash from draft
+      content_hash: draftComponent.content_hash,
       is_published: true,
       updated_at: new Date().toISOString(),
+      ...(tenantId ? { tenant_id: tenantId } : {}),
     }, {
       onConflict: 'id,is_published',
     })
@@ -305,13 +322,17 @@ export async function publishComponents(componentIds: string[]): Promise<{ count
     throw new Error('Failed to initialize Supabase client');
   }
 
-  // Batch fetch all draft components (excluding soft deleted)
-  const { data: draftComponents, error: fetchError } = await client
+  const tenantId = await resolveEffectiveTenantId();
+
+  let fetchQuery = client
     .from('components')
     .select('*')
     .in('id', componentIds)
     .eq('is_published', false)
     .is('deleted_at', null);
+  fetchQuery = applyTenantEq(fetchQuery, tenantId);
+
+  const { data: draftComponents, error: fetchError } = await fetchQuery;
 
   if (fetchError) {
     throw new Error(`Failed to fetch draft components: ${fetchError.message}`);
@@ -321,7 +342,6 @@ export async function publishComponents(componentIds: string[]): Promise<{ count
     return { count: 0 };
   }
 
-  // Prepare components for batch upsert
   const componentsToUpsert = draftComponents.map(draft => ({
     id: draft.id,
     name: draft.name,
@@ -330,9 +350,9 @@ export async function publishComponents(componentIds: string[]): Promise<{ count
     content_hash: draft.content_hash,
     is_published: true,
     updated_at: new Date().toISOString(),
+    ...(tenantId ? { tenant_id: tenantId } : {}),
   }));
 
-  // Batch upsert all components
   const { error: upsertError } = await client
     .from('components')
     .upsert(componentsToUpsert, {
@@ -358,13 +378,17 @@ export async function getUnpublishedComponents(): Promise<Component[]> {
     throw new Error('Failed to initialize Supabase client');
   }
 
-  // Get all draft components (excluding soft deleted)
-  const { data: draftComponents, error } = await client
+  const tenantId = await resolveEffectiveTenantId();
+
+  let draftQuery = client
     .from('components')
     .select('*')
     .eq('is_published', false)
     .is('deleted_at', null)
     .order('created_at', { ascending: false });
+  draftQuery = applyTenantEq(draftQuery, tenantId);
+
+  const { data: draftComponents, error } = await draftQuery;
 
   if (error) {
     throw new Error(`Failed to fetch draft components: ${error.message}`);
@@ -376,34 +400,31 @@ export async function getUnpublishedComponents(): Promise<Component[]> {
 
   const unpublishedComponents: Component[] = [];
 
-  // Batch fetch all published components for the draft IDs
   const draftIds = draftComponents.map(c => c.id);
-  const { data: publishedComponents, error: publishedError } = await client
+  let pubQuery = client
     .from('components')
     .select('*')
     .in('id', draftIds)
     .eq('is_published', true);
+  pubQuery = applyTenantEq(pubQuery, tenantId);
+
+  const { data: publishedComponents, error: publishedError } = await pubQuery;
 
   if (publishedError) {
     throw new Error(`Failed to fetch published components: ${publishedError.message}`);
   }
 
-  // Build lookup map
   const publishedById = new Map<string, Component>();
   (publishedComponents || []).forEach(c => publishedById.set(c.id, c));
 
-  // Check each draft component
   for (const draftComponent of draftComponents) {
-    // Check if published version exists
     const publishedComponent = publishedById.get(draftComponent.id);
 
-    // If no published version exists, needs first-time publishing
     if (!publishedComponent) {
       unpublishedComponents.push(draftComponent);
       continue;
     }
 
-    // Compare content hashes
     if (draftComponent.content_hash !== publishedComponent.content_hash) {
       unpublishedComponents.push(draftComponent);
     }
@@ -421,11 +442,16 @@ export async function hardDeleteSoftDeletedComponents(): Promise<{ count: number
     throw new Error('Failed to initialize Supabase client');
   }
 
-  const { data: deletedDrafts, error } = await client
+  const tenantId = await resolveEffectiveTenantId();
+
+  let fetchQuery = client
     .from('components')
     .select('id')
     .eq('is_published', false)
     .not('deleted_at', 'is', null);
+  fetchQuery = applyTenantEq(fetchQuery, tenantId);
+
+  const { data: deletedDrafts, error } = await fetchQuery;
 
   if (error) {
     throw new Error(`Failed to fetch deleted draft components: ${error.message}`);
@@ -437,22 +463,28 @@ export async function hardDeleteSoftDeletedComponents(): Promise<{ count: number
 
   const ids = deletedDrafts.map(c => c.id);
 
-  const { error: pubError } = await client
+  let pubDeleteQuery = client
     .from('components')
     .delete()
     .in('id', ids)
     .eq('is_published', true);
+  pubDeleteQuery = applyTenantEq(pubDeleteQuery, tenantId);
+
+  const { error: pubError } = await pubDeleteQuery;
 
   if (pubError) {
     console.error('Failed to delete published components:', pubError);
   }
 
-  const { error: draftError } = await client
+  let draftDeleteQuery = client
     .from('components')
     .delete()
     .in('id', ids)
     .eq('is_published', false)
     .not('deleted_at', 'is', null);
+  draftDeleteQuery = applyTenantEq(draftDeleteQuery, tenantId);
+
+  const { error: draftError } = await draftDeleteQuery;
 
   if (draftError) {
     throw new Error(`Failed to delete draft components: ${draftError.message}`);
@@ -498,31 +530,36 @@ export async function findEntitiesUsingComponent(componentId: string): Promise<A
     throw new Error('Failed to initialize Supabase client');
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+
   const affectedEntities: AffectedEntity[] = [];
 
-  // Find all page_layers records that contain this component
-  const { data: pageLayersRecords, error: pageError } = await client
+  let pageLayersQuery = client
     .from('page_layers')
     .select('id, page_id, layers, is_published')
     .is('deleted_at', null)
-    .eq('is_published', false); // Only draft versions
+    .eq('is_published', false);
+  pageLayersQuery = applyTenantEq(pageLayersQuery, tenantId);
+
+  const { data: pageLayersRecords, error: pageError } = await pageLayersQuery;
 
   if (pageError) {
     throw new Error(`Failed to fetch page layers: ${pageError.message}`);
   }
 
-  // Get page names for better UX
   const pageIds = pageLayersRecords?.map(r => r.page_id).filter(Boolean) || [];
   let pageNames: Record<string, string> = {};
   if (pageIds.length > 0) {
-    const { data: pages } = await client
+    let pagesQuery = client
       .from('pages')
       .select('id, name')
       .in('id', pageIds);
+    pagesQuery = applyTenantEq(pagesQuery, tenantId);
+
+    const { data: pages } = await pagesQuery;
     pageNames = (pages || []).reduce((acc, p) => ({ ...acc, [p.id]: p.name }), {});
   }
 
-  // Check each page_layers record
   for (const record of pageLayersRecords || []) {
     if (layersContainComponent(record.layers || [], componentId)) {
       const newLayers = await detachComponentFromLayersRecursive(record.layers || [], componentId);
@@ -537,19 +574,20 @@ export async function findEntitiesUsingComponent(componentId: string): Promise<A
     }
   }
 
-  // Find all components (draft versions) that contain this component
-  const { data: componentRecords, error: compError } = await client
+  let compQuery = client
     .from('components')
     .select('id, name, layers')
     .is('deleted_at', null)
     .eq('is_published', false)
-    .neq('id', componentId); // Exclude the component being deleted
+    .neq('id', componentId);
+  compQuery = applyTenantEq(compQuery, tenantId);
+
+  const { data: componentRecords, error: compError } = await compQuery;
 
   if (compError) {
     throw new Error(`Failed to fetch components: ${compError.message}`);
   }
 
-  // Check each component
   for (const record of componentRecords || []) {
     if (layersContainComponent(record.layers || [], componentId)) {
       const newLayers = await detachComponentFromLayersRecursive(record.layers || [], componentId);
@@ -591,38 +629,42 @@ export async function softDeleteComponent(id: string): Promise<SoftDeleteResult>
     throw new Error('Failed to initialize Supabase client');
   }
 
-  // Get the component before deleting
-  const { data: component, error: fetchError } = await client
+  const tenantId = await resolveEffectiveTenantId();
+
+  let fetchQuery = client
     .from('components')
     .select('*')
     .eq('id', id)
     .eq('is_published', false)
-    .is('deleted_at', null)
-    .single();
+    .is('deleted_at', null);
+  fetchQuery = applyTenantEq(fetchQuery, tenantId);
+
+  const { data: component, error: fetchError } = await fetchQuery.single();
 
   if (fetchError || !component) {
     throw new Error('Component not found');
   }
 
-  // Find all affected entities
   const affectedEntities = await findEntitiesUsingComponent(id);
 
-  // Detach component from all affected page_layers
   for (const entity of affectedEntities) {
     if (entity.type === 'page') {
-      const { error: updateError } = await client
+      let pageUpdateQuery = client
         .from('page_layers')
         .update({
           layers: entity.newLayers,
           updated_at: new Date().toISOString(),
         })
         .eq('id', entity.id);
+      pageUpdateQuery = applyTenantEq(pageUpdateQuery, tenantId);
+
+      const { error: updateError } = await pageUpdateQuery;
 
       if (updateError) {
         console.error(`Failed to update page_layers ${entity.id}:`, updateError);
       }
     } else if (entity.type === 'component') {
-      const { error: updateError } = await client
+      let compUpdateQuery = client
         .from('components')
         .update({
           layers: entity.newLayers,
@@ -630,6 +672,9 @@ export async function softDeleteComponent(id: string): Promise<SoftDeleteResult>
         })
         .eq('id', entity.id)
         .eq('is_published', false);
+      compUpdateQuery = applyTenantEq(compUpdateQuery, tenantId);
+
+      const { error: updateError } = await compUpdateQuery;
 
       if (updateError) {
         console.error(`Failed to update component ${entity.id}:`, updateError);
@@ -637,12 +682,14 @@ export async function softDeleteComponent(id: string): Promise<SoftDeleteResult>
     }
   }
 
-  // Soft delete the component (both draft and published versions)
   const deletedAt = new Date().toISOString();
-  const { error: deleteError } = await client
+  let softDeleteQuery = client
     .from('components')
     .update({ deleted_at: deletedAt })
     .eq('id', id);
+  softDeleteQuery = applyTenantEq(softDeleteQuery, tenantId);
+
+  const { error: deleteError } = await softDeleteQuery;
 
   if (deleteError) {
     throw new Error(`Failed to soft delete component: ${deleteError.message}`);
@@ -663,13 +710,16 @@ export async function restoreComponent(id: string): Promise<Component> {
     throw new Error('Failed to initialize Supabase client');
   }
 
-  const { data, error } = await client
+  const tenantId = await resolveEffectiveTenantId();
+
+  let query = client
     .from('components')
     .update({ deleted_at: null })
     .eq('id', id)
-    .eq('is_published', false)
-    .select()
-    .single();
+    .eq('is_published', false);
+  query = applyTenantEq(query, tenantId);
+
+  const { data, error } = await query.select().single();
 
   if (error) {
     throw new Error(`Failed to restore component: ${error.message}`);
@@ -687,10 +737,15 @@ export async function deleteComponent(id: string): Promise<void> {
     throw new Error('Failed to initialize Supabase client');
   }
 
-  const { error } = await client
+  const tenantId = await resolveEffectiveTenantId();
+
+  let query = client
     .from('components')
     .delete()
     .eq('id', id);
+  query = applyTenantEq(query, tenantId);
+
+  const { error } = await query;
 
   if (error) {
     throw new Error(`Failed to delete component: ${error.message}`);
@@ -706,11 +761,16 @@ export async function updateComponentThumbnail(id: string, thumbnailUrl: string 
     throw new Error('Failed to initialize Supabase client');
   }
 
-  const { error } = await client
+  const tenantId = await resolveEffectiveTenantId();
+
+  let query = client
     .from('components')
     .update({ thumbnail_url: thumbnailUrl })
     .eq('id', id)
     .eq('is_published', false);
+  query = applyTenantEq(query, tenantId);
+
+  const { error } = await query;
 
   if (error) {
     throw new Error(`Failed to update component thumbnail: ${error.message}`);

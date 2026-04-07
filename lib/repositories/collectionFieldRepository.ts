@@ -1,3 +1,4 @@
+import { resolveEffectiveTenantId } from '@/lib/masjidweb/effective-tenant-id';
 import { getSupabaseAdmin } from '@/lib/supabase-server';
 import { SUPABASE_QUERY_LIMIT } from '@/lib/supabase-constants';
 import type { CollectionField, CreateCollectionFieldData, UpdateCollectionFieldData } from '@/types';
@@ -16,6 +17,8 @@ import { randomUUID } from 'crypto';
 export interface FieldFilters {
   search?: string;
   excludeComputed?: boolean;
+  /** When true, include masjidweb tenancy fields (`tenant_id`, `tenant_slug`). Default false hides them from editor/API lists. Publishing must set true or published snapshots for those fields (and their values) never get created. */
+  includeSystemFields?: boolean;
 }
 
 /**
@@ -31,13 +34,15 @@ export async function getAllFields(
     throw new Error('Supabase client not configured');
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+
   // Use pagination to handle >1000 fields (Supabase default limit)
   const allFields: CollectionField[] = [];
   let offset = 0;
   let hasMore = true;
 
   while (hasMore) {
-    const { data, error } = await client
+    let pageQ = client
       .from('collection_fields')
       .select('*')
       .eq('is_published', is_published)
@@ -45,6 +50,12 @@ export async function getAllFields(
       .order('collection_id', { ascending: true })
       .order('order', { ascending: true })
       .range(offset, offset + SUPABASE_QUERY_LIMIT - 1);
+
+    if (tenantId) {
+      pageQ = pageQ.eq('tenant_id', tenantId);
+    }
+
+    const { data, error } = await pageQ;
 
     if (error) {
       throw new Error(`Failed to fetch all collection fields: ${error.message}`);
@@ -59,7 +70,8 @@ export async function getAllFields(
     }
   }
 
-  return allFields;
+  const SYSTEM_FIELD_KEYS = new Set(['tenant_id', 'tenant_slug']);
+  return allFields.filter((f) => !f.key || !SYSTEM_FIELD_KEYS.has(f.key));
 }
 
 /**
@@ -79,6 +91,8 @@ export async function getFieldsByCollectionId(
     throw new Error('Supabase client not configured');
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+
   let query = client
     .from('collection_fields')
     .select('*')
@@ -86,6 +100,10 @@ export async function getFieldsByCollectionId(
     .eq('is_published', is_published)
     .is('deleted_at', null)
     .order('order', { ascending: true });
+
+  if (tenantId) {
+    query = query.eq('tenant_id', tenantId);
+  }
 
   if (filters?.excludeComputed) {
     query = query.eq('is_computed', false);
@@ -102,7 +120,15 @@ export async function getFieldsByCollectionId(
     throw new Error(`Failed to fetch collection fields: ${error.message}`);
   }
 
-  return data || [];
+  const SYSTEM_FIELD_KEYS = new Set(['tenant_id', 'tenant_slug']);
+  if (filters?.includeSystemFields) {
+    return data || [];
+  }
+  const fields = (data || []).filter(
+    (f) => !f.key || !SYSTEM_FIELD_KEYS.has(f.key),
+  );
+
+  return fields;
 }
 
 /**
@@ -153,13 +179,20 @@ export async function getFieldById(id: string, isPublished: boolean = false): Pr
     throw new Error('Supabase client not configured');
   }
 
-  const { data, error } = await client
+  const tenantId = await resolveEffectiveTenantId();
+
+  let q = client
     .from('collection_fields')
     .select('*')
     .eq('id', id)
     .eq('is_published', isPublished)
-    .is('deleted_at', null)
-    .single();
+    .is('deleted_at', null);
+
+  if (tenantId) {
+    q = q.eq('tenant_id', tenantId);
+  }
+
+  const { data, error } = await q.single();
 
   if (error && error.code !== 'PGRST116') {
     throw new Error(`Failed to fetch collection field: ${error.message}`);
@@ -178,23 +211,31 @@ export async function createField(fieldData: CreateCollectionFieldData): Promise
     throw new Error('Supabase client not configured');
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+
   const id = randomUUID();
   const isPublished = fieldData.is_published ?? false;
 
+  const insertRow: Record<string, unknown> = {
+    id,
+    ...fieldData,
+    fillable: fieldData.fillable ?? true,
+    key: fieldData.key ?? null,
+    hidden: fieldData.hidden ?? false,
+    is_computed: fieldData.is_computed ?? false,
+    data: fieldData.data ?? {},
+    is_published: isPublished,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+
+  if (tenantId) {
+    insertRow.tenant_id = tenantId;
+  }
+
   const { data, error } = await client
     .from('collection_fields')
-    .insert({
-      id,
-      ...fieldData,
-      fillable: fieldData.fillable ?? true,
-      key: fieldData.key ?? null,
-      hidden: fieldData.hidden ?? false,
-      is_computed: fieldData.is_computed ?? false,
-      data: fieldData.data ?? {},
-      is_published: isPublished,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    })
+    .insert(insertRow)
     .select()
     .single();
 
@@ -222,7 +263,9 @@ export async function updateField(
     throw new Error('Supabase client not configured');
   }
 
-  const { data, error } = await client
+  const tenantId = await resolveEffectiveTenantId();
+
+  let upd = client
     .from('collection_fields')
     .update({
       ...fieldData,
@@ -230,9 +273,13 @@ export async function updateField(
     })
     .eq('id', id)
     .eq('is_published', isPublished)
-    .is('deleted_at', null)
-    .select()
-    .single();
+    .is('deleted_at', null);
+
+  if (tenantId) {
+    upd = upd.eq('tenant_id', tenantId);
+  }
+
+  const { data, error } = await upd.select().single();
 
   if (error) {
     throw new Error(`Failed to update collection field: ${error.message}`);
@@ -255,10 +302,12 @@ export async function deleteField(id: string, isPublished: boolean = false): Pro
     throw new Error('Supabase client not configured');
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+
   const now = new Date().toISOString();
 
   // Soft delete the field
-  const { error: fieldError } = await client
+  let fUpd = client
     .from('collection_fields')
     .update({
       deleted_at: now,
@@ -268,12 +317,18 @@ export async function deleteField(id: string, isPublished: boolean = false): Pro
     .eq('is_published', isPublished)
     .is('deleted_at', null);
 
+  if (tenantId) {
+    fUpd = fUpd.eq('tenant_id', tenantId);
+  }
+
+  const { error: fieldError } = await fUpd;
+
   if (fieldError) {
     throw new Error(`Failed to delete collection field: ${fieldError.message}`);
   }
 
   // Soft delete all collection_item_values for this field (same published state)
-  const { error: valuesError } = await client
+  let vUpd = client
     .from('collection_item_values')
     .update({
       deleted_at: now,
@@ -282,6 +337,12 @@ export async function deleteField(id: string, isPublished: boolean = false): Pro
     .eq('field_id', id)
     .eq('is_published', isPublished)
     .is('deleted_at', null);
+
+  if (tenantId) {
+    vUpd = vUpd.eq('tenant_id', tenantId);
+  }
+
+  const { error: valuesError } = await vUpd;
 
   if (valuesError) {
     throw new Error(`Failed to delete field values: ${valuesError.message}`);
@@ -305,9 +366,11 @@ export async function reorderFields(
     throw new Error('Supabase client not configured');
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+
   // Update order for each field
-  const updates = field_ids.map((field_id, index) =>
-    client
+  const updates = field_ids.map((field_id, index) => {
+    let u = client
       .from('collection_fields')
       .update({
         order: index,
@@ -316,8 +379,14 @@ export async function reorderFields(
       .eq('id', field_id)
       .eq('collection_id', collection_id)
       .eq('is_published', is_published)
-      .is('deleted_at', null)
-  );
+      .is('deleted_at', null);
+
+    if (tenantId) {
+      u = u.eq('tenant_id', tenantId);
+    }
+
+    return u;
+  });
 
   const results = await Promise.all(updates);
 
@@ -342,12 +411,16 @@ export async function hardDeleteField(id: string, isPublished: boolean = false):
     throw new Error('Supabase client not configured');
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+
   // Hard delete the field (CASCADE will delete values)
-  const { error } = await client
-    .from('collection_fields')
-    .delete()
-    .eq('id', id)
-    .eq('is_published', isPublished);
+  let delQ = client.from('collection_fields').delete().eq('id', id).eq('is_published', isPublished);
+
+  if (tenantId) {
+    delQ = delQ.eq('tenant_id', tenantId);
+  }
+
+  const { error } = await delQ;
 
   if (error) {
     throw new Error(`Failed to hard delete collection field: ${error.message}`);
@@ -373,29 +446,38 @@ export async function publishField(id: string): Promise<CollectionField> {
     throw new Error('Draft field not found');
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+  const rowTid =
+    tenantId ?? (draft as { tenant_id?: string | null }).tenant_id ?? undefined;
+
+  const upsertRow: Record<string, unknown> = {
+    id: draft.id, // Same UUID
+    name: draft.name,
+    key: draft.key,
+    type: draft.type,
+    default: draft.default,
+    fillable: draft.fillable,
+    order: draft.order,
+    collection_id: draft.collection_id,
+    reference_collection_id: draft.reference_collection_id,
+    hidden: draft.hidden,
+    data: draft.data,
+    is_published: true,
+    created_at: draft.created_at,
+    updated_at: new Date().toISOString(),
+  };
+
+  if (rowTid) {
+    upsertRow.tenant_id = rowTid;
+  }
+
   // Upsert published version (composite key handles insert/update automatically)
   const { data, error } = await client
     .from('collection_fields')
-    .upsert({
-      id: draft.id, // Same UUID
-      name: draft.name,
-      key: draft.key,
-      type: draft.type,
-      default: draft.default,
-      fillable: draft.fillable,
-      order: draft.order,
-      collection_id: draft.collection_id,
-      reference_collection_id: draft.reference_collection_id,
-      hidden: draft.hidden,
-      data: draft.data,
-      is_published: true,
-      created_at: draft.created_at,
-      updated_at: new Date().toISOString(),
-    }, {
+    .upsert(upsertRow, {
       onConflict: 'id,is_published', // Composite primary key
     }).select()
     .single();
-
   if (error) {
     throw new Error(`Failed to publish field: ${error.message}`);
   }

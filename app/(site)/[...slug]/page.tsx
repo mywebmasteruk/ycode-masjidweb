@@ -1,6 +1,7 @@
 import { notFound, redirect, permanentRedirect } from 'next/navigation';
 import { unstable_cache } from 'next/cache';
 import type { Metadata } from 'next';
+import { cache } from 'react';
 import { getSupabaseAdmin } from '@/lib/supabase-server';
 import { buildSlugPath } from '@/lib/page-utils';
 import { generatePageMetadata, fetchGlobalPageSettings } from '@/lib/generate-page-metadata';
@@ -9,12 +10,39 @@ import PageRenderer from '@/components/PageRenderer';
 import PasswordForm from '@/components/PasswordForm';
 import { getSettingByKey } from '@/lib/repositories/settingsRepository';
 import { parseAuthCookie, getPasswordProtection, fetchFoldersForAuth } from '@/lib/page-auth';
+import { resolveEffectiveTenantId } from '@/lib/masjidweb/effective-tenant-id';
+import { settingsTenantIdOrNull } from '@/lib/masjidweb/settings-tenant-id';
+import { applyTenantEq } from '@/lib/masjidweb/apply-tenant-eq';
+import {
+  tenantAllPagesTag,
+  tenantRouteTag,
+} from '@/lib/masjidweb/tenant-cache-tags';
 import { getSiteBaseUrl } from '@/lib/url-utils';
 import type { Page, PageFolder, Translation, Redirect as RedirectType } from '@/types';
 
-// Static by default for performance, dynamic only when pagination is requested
-export const revalidate = false; // Cache indefinitely until publish invalidates
+// Avoid ISR full-route caching on Netlify (stale HTML after publish).
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 export const dynamicParams = true;
+
+const getTenantCacheContext = cache(async () => {
+  const effectiveTid = await resolveEffectiveTenantId();
+  let publishedAtVersion = '_';
+  try {
+    const publishedAt = await getSettingByKey('published_at');
+    if (typeof publishedAt === 'string' && publishedAt.trim()) {
+      publishedAtVersion = publishedAt.trim();
+    } else if (publishedAt != null) {
+      publishedAtVersion = JSON.stringify(publishedAt);
+    }
+  } catch {
+    // Non-fatal: keep a stable fallback suffix.
+  }
+  return {
+    effectiveTid,
+    keySuffix: `${effectiveTid ?? '_'}:${publishedAtVersion}`,
+  };
+});
 
 /**
  * Generate static params for known published pages
@@ -29,31 +57,44 @@ export async function generateStaticParams() {
       return [];
     }
 
-    // Get all published pages and folders (excluding soft-deleted)
-    const { data: pages } = await supabase
+    const tenantId = settingsTenantIdOrNull();
+    if (!tenantId) {
+      return [];
+    }
+
+    let pagesQuery = supabase
       .from('pages')
       .select('*')
       .eq('is_published', true)
       .is('deleted_at', null);
+    pagesQuery = applyTenantEq(pagesQuery, tenantId);
+    const { data: pages } = await pagesQuery;
 
-    const { data: folders } = await supabase
+    let foldersQuery = supabase
       .from('page_folders')
       .select('*')
       .eq('is_published', true)
       .is('deleted_at', null);
+    foldersQuery = applyTenantEq(foldersQuery, tenantId);
+    const { data: folders } = await foldersQuery;
 
-    // Get all active locales
-    const { data: locales } = await supabase
+    let localesQuery = supabase
       .from('locales')
       .select('*')
       .is('deleted_at', null);
+    localesQuery = applyTenantEq(localesQuery, tenantId);
+    const { data: locales } = await localesQuery;
 
-    // Get all published translations
-    const { data: translations } = await supabase
-      .from('translations')
-      .select('*')
-      .eq('is_published', true)
-      .is('deleted_at', null);
+    const localeIds = (locales ?? []).map((l) => l.id);
+    const { data: translations } =
+      localeIds.length > 0
+        ? await supabase
+          .from('translations')
+          .select('*')
+          .eq('is_published', true)
+          .is('deleted_at', null)
+          .in('locale_id', localeIds)
+        : { data: null };
 
     if (!pages || !folders) {
       return [];
@@ -149,12 +190,16 @@ export async function generateStaticParams() {
  * Cached per slug and page for revalidation
  */
 async function fetchPublishedPageWithLayers(slugPath: string) {
+  const { effectiveTid, keySuffix } = await getTenantCacheContext();
   try {
     return await unstable_cache(
       async () => fetchPageByPath(slugPath, true),
-      [`data-for-route-/${slugPath}`],
+      [`data-for-route-/${slugPath}`, keySuffix],
       {
-        tags: ['all-pages', `route-/${slugPath}`], // all-pages for full publish invalidation
+        tags: [
+          tenantAllPagesTag(effectiveTid),
+          tenantRouteTag(effectiveTid, slugPath),
+        ],
         revalidate: false,
       }
     )();
@@ -170,11 +215,12 @@ async function fetchPublishedPageWithLayers(slugPath: string) {
 }
 
 async function fetchCachedRedirects(): Promise<RedirectType[] | null> {
+  const { effectiveTid, keySuffix } = await getTenantCacheContext();
   try {
     return await unstable_cache(
       async () => getSettingByKey('redirects') as Promise<RedirectType[] | null>,
-      ['data-for-redirects'],
-      { tags: ['all-pages'], revalidate: false }
+      ['data-for-redirects', keySuffix],
+      { tags: [tenantAllPagesTag(effectiveTid)], revalidate: false }
     )();
   } catch {
     return null;
@@ -182,11 +228,12 @@ async function fetchCachedRedirects(): Promise<RedirectType[] | null> {
 }
 
 async function fetchCachedGlobalSettings() {
+  const { effectiveTid, keySuffix } = await getTenantCacheContext();
   try {
     return await unstable_cache(
       async () => fetchGlobalPageSettings(),
-      ['data-for-global-settings'],
-      { tags: ['all-pages'], revalidate: false }
+      ['data-for-global-settings', keySuffix],
+      { tags: [tenantAllPagesTag(effectiveTid)], revalidate: false }
     )();
   } catch {
     return {
@@ -205,11 +252,12 @@ async function fetchCachedGlobalSettings() {
 }
 
 async function fetchCachedFoldersForAuth() {
+  const { effectiveTid, keySuffix } = await getTenantCacheContext();
   try {
     return await unstable_cache(
       async () => fetchFoldersForAuth(true),
-      ['data-for-auth-folders'],
-      { tags: ['all-pages'], revalidate: false }
+      ['data-for-auth-folders', keySuffix],
+      { tags: [tenantAllPagesTag(effectiveTid)], revalidate: false }
     )();
   } catch {
     return [];
@@ -217,11 +265,12 @@ async function fetchCachedFoldersForAuth() {
 }
 
 async function fetchCachedErrorPage(errorCode: 401 | 404) {
+  const { effectiveTid, keySuffix } = await getTenantCacheContext();
   try {
     return await unstable_cache(
       async () => fetchErrorPage(errorCode, true),
-      [`data-for-error-page-${errorCode}`],
-      { tags: ['all-pages'], revalidate: false }
+      [`data-for-error-page-${errorCode}`, keySuffix],
+      { tags: [tenantAllPagesTag(effectiveTid)], revalidate: false }
     )();
   } catch {
     return null;
@@ -395,6 +444,7 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
     }
   }
 
+  const { effectiveTid, keySuffix } = await getTenantCacheContext();
   const { meta, baseUrl } = await unstable_cache(
     async () => ({
       meta: await generatePageMetadata(data.page, {
@@ -405,8 +455,14 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
       }),
       baseUrl: getSiteBaseUrl({ globalCanonicalUrl: globalSettings.globalCanonicalUrl }),
     }),
-    [`data-for-route-/${slugPath}-meta`],
-    { tags: ['all-pages', `route-/${slugPath}`], revalidate: false }
+    [`data-for-route-/${slugPath}-meta`, keySuffix],
+    {
+      tags: [
+        tenantAllPagesTag(effectiveTid),
+        tenantRouteTag(effectiveTid, slugPath),
+      ],
+      revalidate: false,
+    }
   )();
 
   if (baseUrl) {

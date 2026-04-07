@@ -1,8 +1,52 @@
+import { resolveEffectiveTenantId } from '@/lib/masjidweb/effective-tenant-id';
 import { getSupabaseAdmin } from '@/lib/supabase-server';
 import type { PageLayers, Layer } from '../../types';
 import { generatePageLayersHash } from '../hash-utils';
 import { deleteTranslationsInBulk, markTranslationsIncomplete } from '@/lib/repositories/translationRepository';
 import { extractLayerContentMap } from '../localisation-utils';
+
+function parsePageLayerTime(iso?: string | null): number {
+  if (!iso) return 0;
+  const t = Date.parse(iso);
+  return Number.isNaN(t) ? 0 : t;
+}
+
+/** When multiple draft rows exist for the same page, keep the newest by updated_at (then created_at). */
+function dedupeLatestDraftPerPage(rows: PageLayers[]): PageLayers[] {
+  const byPage = new Map<string, PageLayers>();
+  for (const row of rows) {
+    const prev = byPage.get(row.page_id);
+    if (!prev) {
+      byPage.set(row.page_id, row);
+      continue;
+    }
+    const rowU = parsePageLayerTime(row.updated_at);
+    const prevU = parsePageLayerTime(prev.updated_at);
+    if (rowU > prevU) {
+      byPage.set(row.page_id, row);
+      continue;
+    }
+    if (rowU < prevU) continue;
+    const rowC = parsePageLayerTime(row.created_at);
+    const prevC = parsePageLayerTime(prev.created_at);
+    if (rowC > prevC) {
+      byPage.set(row.page_id, row);
+    }
+  }
+  return [...byPage.values()];
+}
+
+/**
+ * Copy draft layers to published when missing, hash/timestamp differs, or layer JSON differs
+ * (avoids stale published HTML when content_hash is wrong or races occur).
+ */
+function shouldCopyDraftToPublished(draft: PageLayers, existing: PageLayers | undefined): boolean {
+  if (!existing) return true;
+  if ((existing.content_hash ?? '') !== (draft.content_hash ?? '')) return true;
+  if (parsePageLayerTime(draft.updated_at) > parsePageLayerTime(existing.updated_at)) return true;
+  if (JSON.stringify(draft.layers) !== JSON.stringify(existing.layers)) return true;
+  return false;
+}
 
 /**
  * Get layers by page_id with optional is_published filter
@@ -17,11 +61,17 @@ export async function getLayersByPageId(
     throw new Error('Supabase not configured');
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+
   let query = client
     .from('page_layers')
     .select('*')
     .eq('page_id', pageId)
     .is('deleted_at', null);
+
+  if (tenantId) {
+    query = query.eq('tenant_id', tenantId);
+  }
 
   // Apply is_published filter if provided
   if (isPublished !== undefined) {
@@ -45,6 +95,8 @@ export async function getLayersByPageId(
 
 /**
  * Get draft layers for a page
+ * Uses the same per-page dedupe as getDraftLayersForPages so publish and upsert
+ * always target the latest draft row when duplicate draft rows exist for one page.
  */
 export async function getDraftLayers(pageId: string): Promise<PageLayers | null> {
   const client = await getSupabaseAdmin();
@@ -53,24 +105,33 @@ export async function getDraftLayers(pageId: string): Promise<PageLayers | null>
     throw new Error('Supabase not configured');
   }
 
-  const { data, error } = await client
+  const tenantId = await resolveEffectiveTenantId();
+
+  let q = client
     .from('page_layers')
     .select('*')
     .eq('page_id', pageId)
     .eq('is_published', false)
     .is('deleted_at', null)
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .single();
+    .order('created_at', { ascending: false });
+
+  if (tenantId) {
+    q = q.eq('tenant_id', tenantId);
+  }
+
+  const { data, error } = await q;
 
   if (error) {
-    if (error.code === 'PGRST116') {
-      return null; // Not found
-    }
     throw new Error(`Failed to fetch draft: ${error.message}`);
   }
 
-  return data;
+  const rows = data || [];
+  if (rows.length === 0) {
+    return null;
+  }
+
+  const deduped = dedupeLatestDraftPerPage(rows);
+  return deduped[0] ?? null;
 }
 
 /**
@@ -83,15 +144,22 @@ export async function getPublishedLayers(pageId: string): Promise<PageLayers | n
     throw new Error('Supabase not configured');
   }
 
-  const { data, error } = await client
+  const tenantId = await resolveEffectiveTenantId();
+
+  let q = client
     .from('page_layers')
     .select('*')
     .eq('page_id', pageId)
     .eq('is_published', true)
     .is('deleted_at', null)
     .order('created_at', { ascending: false })
-    .limit(1)
-    .single();
+    .limit(1);
+
+  if (tenantId) {
+    q = q.eq('tenant_id', tenantId);
+  }
+
+  const { data, error } = await q.single();
 
   if (error) {
     if (error.code === 'PGRST116') {
@@ -119,6 +187,8 @@ export async function upsertDraftLayers(
   if (!client) {
     throw new Error('Supabase not configured');
   }
+
+  const tenantId = await resolveEffectiveTenantId();
 
   // Check if draft exists
   const existingDraft = await getDraftLayers(pageId);
@@ -166,13 +236,17 @@ export async function upsertDraftLayers(
 
   if (existingDraft) {
     // Update existing draft
-    const { data, error } = await client
+    let upd = client
       .from('page_layers')
       .update(updateData)
       .eq('id', existingDraft.id)
-      .eq('is_published', false)
-      .select()
-      .single();
+      .eq('is_published', false);
+
+    if (tenantId) {
+      upd = upd.eq('tenant_id', tenantId);
+    }
+
+    const { data, error } = await upd.select().single();
 
     if (error) {
       throw new Error(`Failed to update draft: ${error.message}`);
@@ -181,13 +255,17 @@ export async function upsertDraftLayers(
     return data;
   } else {
     // Create new draft with any additional data
-    const insertData: any = {
+    const insertData: Record<string, unknown> = {
       page_id: pageId,
       layers,
       content_hash: contentHash,
       is_published: false,
-      ...additionalData
+      ...additionalData,
     };
+
+    if (tenantId) {
+      insertData.tenant_id = tenantId;
+    }
 
     const { data, error } = await client
       .from('page_layers')
@@ -214,18 +292,26 @@ export async function getAllDraftLayers(): Promise<PageLayers[]> {
     throw new Error('Supabase not configured');
   }
 
-  const { data, error } = await client
+  const tenantId = await resolveEffectiveTenantId();
+
+  let q = client
     .from('page_layers')
     .select('*')
     .eq('is_published', false)
     .is('deleted_at', null)
     .order('created_at', { ascending: false });
 
+  if (tenantId) {
+    q = q.eq('tenant_id', tenantId);
+  }
+
+  const { data, error } = await q;
+
   if (error) {
     throw new Error(`Failed to fetch draft layers: ${error.message}`);
   }
 
-  return data || [];
+  return dedupeLatestDraftPerPage(data || []);
 }
 
 /**
@@ -243,7 +329,9 @@ export async function getDraftLayersForPages(pageIds: string[]): Promise<PageLay
     return [];
   }
 
-  const { data, error } = await client
+  const tenantId = await resolveEffectiveTenantId();
+
+  let q = client
     .from('page_layers')
     .select('*')
     .in('page_id', pageIds)
@@ -251,11 +339,17 @@ export async function getDraftLayersForPages(pageIds: string[]): Promise<PageLay
     .is('deleted_at', null)
     .order('created_at', { ascending: false });
 
+  if (tenantId) {
+    q = q.eq('tenant_id', tenantId);
+  }
+
+  const { data, error } = await q;
+
   if (error) {
     throw new Error(`Failed to fetch draft layers: ${error.message}`);
   }
 
-  return data || [];
+  return dedupeLatestDraftPerPage(data || []);
 }
 
 /**
@@ -273,12 +367,20 @@ export async function getPublishedLayersByIds(ids: string[]): Promise<PageLayers
     return [];
   }
 
-  const { data, error } = await client
+  const tenantId = await resolveEffectiveTenantId();
+
+  let q = client
     .from('page_layers')
     .select('*')
     .in('id', ids)
     .eq('is_published', true)
     .is('deleted_at', null);
+
+  if (tenantId) {
+    q = q.eq('tenant_id', tenantId);
+  }
+
+  const { data, error } = await q;
 
   if (error) {
     throw new Error(`Failed to fetch published layers: ${error.message}`);
@@ -298,13 +400,20 @@ export async function getPublishedLayersById(id: string): Promise<PageLayers | n
     throw new Error('Supabase not configured');
   }
 
-  const { data, error } = await client
+  const tenantId = await resolveEffectiveTenantId();
+
+  let q = client
     .from('page_layers')
     .select('*')
     .eq('id', id)
     .eq('is_published', true)
-    .is('deleted_at', null)
-    .single();
+    .is('deleted_at', null);
+
+  if (tenantId) {
+    q = q.eq('tenant_id', tenantId);
+  }
+
+  const { data, error } = await q.single();
 
   if (error) {
     if (error.code === 'PGRST116') {
@@ -331,6 +440,8 @@ export async function publishPageLayers(draftPageId: string, publishedPageId: st
     throw new Error('Supabase not configured');
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+
   // Get current draft layers
   const draftLayers = await getDraftLayers(draftPageId);
 
@@ -342,43 +453,53 @@ export async function publishPageLayers(draftPageId: string, publishedPageId: st
   const existingPublished = await getPublishedLayersById(draftLayers.id);
 
   if (existingPublished) {
-    // Update existing published version only if content_hash changed
-    const hasChanges = existingPublished.content_hash !== draftLayers.content_hash;
-
-    if (hasChanges) {
-      // Prepare update data WITHOUT primary key fields (id, is_published)
-      const updateData: any = {
-        page_id: publishedPageId, // Same page ID (draft and published pages share same id)
-        layers: draftLayers.layers,
-        content_hash: draftLayers.content_hash, // Copy hash from draft
-        updated_at: new Date().toISOString(),
-      };
-
-      const { data, error } = await client
-        .from('page_layers')
-        .update(updateData)
-        .eq('id', existingPublished.id)
-        .eq('is_published', true)
-        .select()
-        .single();
-
-      if (error) {
-        throw new Error(`Failed to update published layers: ${error.message}`);
-      }
-
-      return data;
+    if (!shouldCopyDraftToPublished(draftLayers, existingPublished)) {
+      return existingPublished;
     }
 
-    return existingPublished;
+    // Prepare update data WITHOUT primary key fields (id, is_published)
+    const updateData: any = {
+      page_id: publishedPageId, // Same page ID (draft and published pages share same id)
+      layers: draftLayers.layers,
+      content_hash: draftLayers.content_hash, // Copy hash from draft
+      updated_at: new Date().toISOString(),
+    };
+
+    let pubUpd = client
+      .from('page_layers')
+      .update(updateData)
+      .eq('id', existingPublished.id)
+      .eq('is_published', true);
+
+    if (tenantId) {
+      pubUpd = pubUpd.eq('tenant_id', tenantId);
+    }
+
+    const { data, error } = await pubUpd.select().single();
+
+    if (error) {
+      throw new Error(`Failed to update published layers: ${error.message}`);
+    }
+
+    return data;
   } else {
     // Create new published version - include ALL fields for insert
-    const insertData: any = {
+    const rowTid =
+      tenantId ??
+      (draftLayers as { tenant_id?: string | null }).tenant_id ??
+      undefined;
+
+    const insertData: Record<string, unknown> = {
       id: draftLayers.id, // Use same ID (composite key with is_published)
       page_id: publishedPageId,
       layers: draftLayers.layers,
       content_hash: draftLayers.content_hash,
       is_published: true,
     };
+
+    if (rowTid) {
+      insertData.tenant_id = rowTid;
+    }
 
     const { data, error } = await client
       .from('page_layers')
@@ -411,17 +532,13 @@ export async function batchPublishPageLayers(pageIds: string[]): Promise<number>
     throw new Error('Supabase not configured');
   }
 
-  // Step 1: Batch fetch all draft layers
+  const tenantId = await resolveEffectiveTenantId();
+
+  // Step 1: Batch fetch all draft layers (deduped per page inside getDraftLayersForPages)
   const draftLayers = await getDraftLayersForPages(pageIds);
 
   if (draftLayers.length === 0) {
     return 0;
-  }
-
-  // Build map for quick lookup
-  const draftLayersById = new Map<string, PageLayers>();
-  for (const draft of draftLayers) {
-    draftLayersById.set(draft.id, draft);
   }
 
   // Step 2: Batch fetch existing published layers
@@ -440,16 +557,26 @@ export async function batchPublishPageLayers(pageIds: string[]): Promise<number>
   for (const draft of draftLayers) {
     const existing = publishedById.get(draft.id);
 
-    // Only include if new or content_hash changed
-    if (!existing || existing.content_hash !== draft.content_hash) {
-      layersToUpsert.push({
+    if (shouldCopyDraftToPublished(draft, existing)) {
+      const row: Record<string, unknown> = {
         id: draft.id,
         page_id: draft.page_id,
         layers: draft.layers,
         content_hash: draft.content_hash,
         is_published: true,
         updated_at: now,
-      });
+      };
+
+      const rowTid =
+        tenantId ??
+        (draft as { tenant_id?: string | null }).tenant_id ??
+        undefined;
+
+      if (rowTid) {
+        row.tenant_id = rowTid;
+      }
+
+      layersToUpsert.push(row);
     }
   }
 
@@ -479,12 +606,20 @@ export async function getPageLayers(pageId: string): Promise<PageLayers[]> {
     throw new Error('Supabase not configured');
   }
 
-  const { data, error } = await client
+  const tenantId = await resolveEffectiveTenantId();
+
+  let q = client
     .from('page_layers')
     .select('*')
     .eq('page_id', pageId)
     .is('deleted_at', null)
     .order('created_at', { ascending: false });
+
+  if (tenantId) {
+    q = q.eq('tenant_id', tenantId);
+  }
+
+  const { data, error } = await q;
 
   if (error) {
     throw new Error(`Failed to fetch layers: ${error.message}`);

@@ -23,7 +23,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Revalidate the cache for this tag
-    revalidateTag(tag, { expire: 0 });
+    revalidateTag(tag, 'max');
 
     return noCache({
       revalidated: true,

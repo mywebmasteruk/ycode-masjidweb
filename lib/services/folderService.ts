@@ -5,6 +5,8 @@
  */
 
 import { getSupabaseAdmin } from '@/lib/supabase-server';
+import { resolveEffectiveTenantId } from '@/lib/masjidweb/effective-tenant-id';
+import { applyTenantEq } from '@/lib/masjidweb/apply-tenant-eq';
 import type { PageFolder } from '@/types';
 
 /**
@@ -102,11 +104,15 @@ export async function publishFolders(
     return { count: 0 };
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+
   // Get all draft folders (including soft-deleted for cleanup)
-  const { data: allDraftFolders, error: foldersError } = await client
+  let draftFoldersQuery = client
     .from('page_folders')
     .select('*')
     .eq('is_published', false);
+  draftFoldersQuery = applyTenantEq(draftFoldersQuery, tenantId);
+  const { data: allDraftFolders, error: foldersError } = await draftFoldersQuery;
 
   if (foldersError || !allDraftFolders) {
     throw new Error(`Failed to fetch folders: ${foldersError?.message}`);
@@ -135,11 +141,13 @@ export async function publishFolders(
   const allIdsToCheck = [...new Set([...folderIdsToCheck, ...parentFolderIds])];
 
   // Fetch all published folders we need to reference
-  const { data: existingPublished } = await client
+  let pubFolderQuery = client
     .from('page_folders')
     .select('*')
     .eq('is_published', true)
     .in('id', allIdsToCheck);
+  pubFolderQuery = applyTenantEq(pubFolderQuery, tenantId);
+  const { data: existingPublished } = await pubFolderQuery;
 
   const publishedFoldersById = new Map<string, PageFolder>(
     (existingPublished || []).map((f: PageFolder) => [f.id, f])
@@ -224,6 +232,7 @@ export async function publishFolders(
       depth: folder.depth,
       settings: folder.settings,
       is_published: true,
+      ...(tenantId ? { tenant_id: tenantId } : {}),
     });
   }
 

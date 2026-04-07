@@ -4,6 +4,8 @@
  */
 
 import { getSupabaseAdmin } from '@/lib/supabase-server';
+import { resolveEffectiveTenantId } from '@/lib/masjidweb/effective-tenant-id';
+import { applyTenantEq } from '@/lib/masjidweb/apply-tenant-eq';
 import type { Locale, Translation } from '@/types';
 
 export interface PublishLocalisationResult {
@@ -26,6 +28,8 @@ export async function publishLocalisation(): Promise<PublishLocalisationResult> 
     throw new Error('Supabase not configured');
   }
 
+  const tenantId = await resolveEffectiveTenantId();
+
   const deletedAt = new Date().toISOString();
   let publishedLocalesCount = 0;
   let publishedTranslationsCount = 0;
@@ -36,10 +40,12 @@ export async function publishLocalisation(): Promise<PublishLocalisationResult> 
   const localesStart = performance.now();
 
   // Step 1: Fetch all draft locales (including soft-deleted)
-  const { data: allDraftLocales, error: localesError } = await client
+  let draftLocalesQuery = client
     .from('locales')
     .select('*')
     .eq('is_published', false);
+  draftLocalesQuery = applyTenantEq(draftLocalesQuery, tenantId);
+  const { data: allDraftLocales, error: localesError } = await draftLocalesQuery;
 
   if (localesError) {
     throw new Error(`Failed to fetch draft locales: ${localesError.message}`);
@@ -88,6 +94,7 @@ export async function publishLocalisation(): Promise<PublishLocalisationResult> 
           created_at: locale.created_at,
           updated_at: locale.updated_at,
           deleted_at: null,
+          ...(tenantId ? { tenant_id: tenantId } : {}),
         };
 
         if (existingPublishedIds.has(locale.id)) {
