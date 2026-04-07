@@ -13,10 +13,12 @@ export const revalidate = 0;
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
+    console.warn('[Airtable Webhook] Received payload:', JSON.stringify(body));
     const baseId = body?.base?.id;
     const webhookId = body?.webhook?.id;
 
     if (!baseId || !webhookId) {
+      console.warn('[Airtable Webhook] Missing base.id or webhook.id:', { baseId, webhookId });
       return NextResponse.json({ error: 'Invalid payload' }, { status: 400 });
     }
 
